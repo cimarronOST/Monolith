@@ -1,5 +1,5 @@
 /*
-  Monolith 0.1  Copyright (C) 2017 Jonas Mayr
+  Monolith 0.2  Copyright (C) 2017 Jonas Mayr
 
   This file is part of Monolith.
 
@@ -28,7 +28,7 @@
 
 namespace benchmark
 {
-	void analysis(string type);
+	void analysis(const string type);
 }
 
 #endif
