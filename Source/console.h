@@ -1,5 +1,5 @@
 /*
-  Monolith 0.1  Copyright (C) 2017 Jonas Mayr
+  Monolith 0.2  Copyright (C) 2017 Jonas Mayr
 
   This file is part of Monolith.
 
@@ -34,8 +34,8 @@ namespace console
 
 	bool game_end(pos &board);
 	void update_state(pos &board);
-	void print(pos &board);
-	void to_char(pos &board, char board_char[]);
+	void print(const pos &board);
+	void to_char(const pos &board, char board_char[]);
 }
 
 #endif
