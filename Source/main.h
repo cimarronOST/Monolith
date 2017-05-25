@@ -1,5 +1,5 @@
 /*
-  Monolith 0.1  Copyright (C) 2017 Jonas Mayr
+  Monolith 0.2  Copyright (C) 2017 Jonas Mayr
 
   This file is part of Monolith.
 
@@ -20,19 +20,19 @@
 
 #pragma once
 
-//// compile controls
+// compile controls
 
-#define SSE4
-#define DEBUG
-#define LOG_ON
+#define NSSE4
+#define NDEBUG
+#define LOG_OFF
 
-//// global includes
+// global includes
 
 #include <iostream>
 #include <string>
 #include <cassert>
 
-//// defines
+// defines
 
 #ifdef LOG_ON
 #define log sync_log
@@ -40,17 +40,17 @@
 #define log std
 #endif
 
-//// used namespaces
+// namespaces
 
 using std::endl;
 using std::string;
 
-//// global strings
+// global strings
 
-const string version{ "0.1" };
+const string version{ "0.2" };
 const string startpos{ "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 0" };
 
-//// typedefs
+// typedefs
 
 typedef unsigned long long uint64;
 typedef unsigned int uint32;
@@ -58,11 +58,9 @@ typedef unsigned short uint16;
 typedef unsigned char uint8;
 typedef signed short int16;
 
-//// global constants
+// global constants
 
 const uint8 castl_right[]{ 0x1, 0x4, 0x10, 0x40 };
-
-const int value[]{ 100, 500, 320, 330, 950 };
 
 namespace lim
 {
@@ -73,7 +71,19 @@ namespace lim
 	const int hash{ 1024 };
 }
 
-//// global functions
+const uint64 file[]
+{
+	0x0101010101010101, 0x0202020202020202, 0x0404040404040404, 0x0808080808080808,
+	0x1010101010101010, 0x2020202020202020, 0x4040404040404040, 0x8080808080808080
+};
+
+const uint64 rank[]
+{
+	0x00000000000000ff, 0x000000000000ff00, 0x0000000000ff0000, 0x00000000ff000000,
+	0x000000ff00000000, 0x0000ff0000000000, 0x00ff000000000000, 0xff00000000000000
+};
+
+// global functions
 
 inline uint64 shift(uint64 bb, int shift)
 {
@@ -96,30 +106,28 @@ inline uint8 to_flag(uint16 move)
 	return static_cast<uint8>(move >> 12);
 }
 
-//// global enums
+// global enums
 
 enum square_e
 {
-	h1, g1, f1, e1, d1, c1, b1, a1,
-	h2, g2, f2, e2, d2, c2, b2, a2,
-	h3, g3, f3, e3, d3, c3, b3, a3,
-	h4, g4, f4, e4, d4, c4, b4, a4,
-	h5, g5, f5, e5, d5, c5, b5, a5,
-	h6, g6, f6, e6, d6, c6, b6, a6,
-	h7, g7, f7, e7, d7, c7, b7, a7,
-	h8, g8, f8, e8, d8, c8, b8, a8
+	H1, G1, F1, E1, D1, C1, B1, A1,
+	H2, G2, F2, E2, D2, C2, B2, A2,
+	H3, G3, F3, E3, D3, C3, B3, A3,
+	H4, G4, F4, E4, D4, C4, B4, A4,
+	H5, G5, F5, E5, D5, C5, B5, A5,
+	H6, G6, F6, E6, D6, C6, B6, A6,
+	H7, G7, F7, E7, D7, C7, B7, A7,
+	H8, G8, F8, E8, D8, C8, B8, A8
 };
 
-enum turn_e
+enum file_e
 {
-	white,
-	black
+	H, G, F, E, D, C, B, A
 };
 
-enum slide_e
+enum rank_e
 {
-	rook,
-	bishop
+	R1, R2, R3, R4, R5, R6, R7, R8
 };
 
 enum piece_e
@@ -131,6 +139,12 @@ enum piece_e
 	QUEENS,
 	KINGS,
 	NONE
+};
+
+enum slide_e
+{
+	ROOK,
+	BISHOP
 };
 
 enum pawn_e
