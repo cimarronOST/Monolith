@@ -1,5 +1,5 @@
 /*
-  Monolith 0.1  Copyright (C) 2017 Jonas Mayr
+  Monolith 0.2  Copyright (C) 2017 Jonas Mayr
 
   This file is part of Monolith.
 
@@ -27,5 +27,5 @@ namespace bb
 	int popcnt(uint64 board);
 	void bitscan(uint64 board);
 
-	unsigned long &lsb();
+	unsigned long lsb();
 };
