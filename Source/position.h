@@ -1,5 +1,5 @@
 /*
-  Monolith 0.1  Copyright (C) 2017 Jonas Mayr
+  Monolith 0.2  Copyright (C) 2017 Jonas Mayr
 
   This file is part of Monolith.
 
@@ -27,7 +27,8 @@ class pos
 public:
 	uint64 pieces[6];
 	uint64 side[3];
-	int piece_sq[64];
+	uint8 piece_sq[64];
+	int king_sq[2];
 
 	int moves;
 	int half_moves;
@@ -43,7 +44,8 @@ public:
 	void new_move(uint16 move);
 	void null_move(uint64 &ep_copy);
 	void undo_null_move(uint64 &ep_copy);
-	void rook_moved(uint64 &sq);
+
+	void rook_moved(uint64 &sq64, uint16 sq);
 	void clear();
 
 	bool lone_king() const;
