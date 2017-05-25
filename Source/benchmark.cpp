@@ -1,5 +1,5 @@
 /*
-  Monolith 0.1  Copyright (C) 2017 Jonas Mayr
+  Monolith 0.2  Copyright (C) 2017 Jonas Mayr
 
   This file is part of Monolith.
 
@@ -35,6 +35,7 @@ namespace
 		int depth_max;
 		string info;
 	};
+
 	const unit perft_pos[]
 	{
 		{ "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq -", 6, "119060324" },
@@ -45,25 +46,32 @@ namespace
 	};
 	const unit search_pos[]
 	{
-		{ "2k3r1/4b3/4P3/7B/p6K/P3p3/5n1Q/3q4 w - -", 1, "mate" },
-		{ "4k3/4P1p1/4K1P1/2p5/1pP5/1P1N2B1/8/8 b - -", 1, "stalemate" },
-		{ "k7/P5R1/7P/8/8/6P1/4r3/5K2 b - -", 13, "forced rep.-draw" },
-		{ "7K/8/k1P5/7p/8/8/8/8 w - -", 13, "reti study" },
-		{ "8/1kn5/pn6/P6P/6r1/5K2/8/3r4 w - - 47 95", 6, "50-move-rule" },
-		{ "5B2/6P1/1p6/8/1N6/kP6/2K5/8 w - -", 9, "hakmem 70" },
+		{ "2k3r1/4b3/4P3/7B/p6K/P3p3/5n1Q/3q4 w - -", 1, "is mate" },
+		{ "4k3/4P1p1/4K1P1/2p5/1pP5/1P1N2B1/8/8 b - -", 1, "is stalemate" },
+		{ "8/1kn5/pn6/P6P/6r1/5K2/2r5/8 w - - 99 95", 10, "is draw" },
+		{ "5B2/6P1/1p6/8/1N6/kP6/2K5/8 w - -", 9, "hakmem 70 | mate in 3 | bm g8N" },
+		{ "8/8/p3R3/1p5p/1P5p/6rp/5K1p/7k w - -", 16, "zugzwang | mate in 7 | bm Re1"},
+
+		{ "7K/8/k1P5/7p/8/8/8/8 w - -", 13, "reti study | insu.ma.-draw | draw in 6 | bm Kg7" },
+		{ "8/1kn5/pn6/P6P/6r1/5K2/2r5/8 w - - 97 115", 7, "50-move-rule-draw | draw in 2 | bm Ke3" },
+		{ "k7/P5R1/7P/8/8/6P1/4r3/5K2 b - -", 14, "rep.-draw | draw in 7 | bm Rf2" },
+		{ "6R1/P2k4/r7/5N1P/r7/p7/7K/8 w - -", 11, "djaja study | rep.-draw | bm Nh6" }, // unsolved
 
 		{ "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq -", 9, "startpos" },
-		{ "r3k2r/p1ppqpb1/bn2pnp1/3PN3/1p2P3/2N2Q1p/PPPBBPPP/R3K2R w KQkq -", 6, "kiwipete" },
-		{ "rn1qk2r/p1pnbppp/bp2p3/3pN3/2PP4/1P4P1/P2BPPBP/RN1QK2R w KQkq -", 8, "silent but deadly" },
-		{ "6R1/P2k4/r7/5N1P/r7/p7/7K/8 w - -", 10, "djaja study" },
-		{ "8/k7/3p4/p2P1p2/P2P1P2/8/8/K7 w - -", 17, "lasker-reichhelm" }
+		{ "r3k2r/p1ppqpb1/bn2pnp1/3PN3/1p2P3/2N2Q1p/PPPBBPPP/R3K2R w KQkq -", 6, "kiwipete | midgame search" },
+		{ "rn1qk2r/p1pnbppp/bp2p3/3pN3/2PP4/1P4P1/P2BPPBP/RN1QK2R w KQkq -", 8, "silent but deadly | midgame search | bm Nxf7" },
+
+		{ "8/k7/3p4/p2P1p2/P2P1P2/8/8/K7 w - -", 28, "lasker-reichhelm | tt-test | mate in 32 | bm a1b1;" }, // unsolved
+		{ "4k3/8/8/8/8/8/4P3/4K3 w - -", 20, "fine 70 | tt-test | mate in 22 | bm Kd2" }, // unsolved
+		{ "8/8/8/1k6/8/8/8/RK6 w - -", 21, "rook + king | tt-test | mate in 13 | bm Kc2"}, // unsolved
+		{ "3k4/1p6/1P1K4/2P5/8/8/8/8 w - -", 20, "tt-test | mate in 8 | bm Ke6"}
 	};
 
 	int s_depth;
 	int s_movetime;
 }
 
-void benchmark::analysis(string type)
+void benchmark::analysis(const string type)
 {
 	pos board;
 	chronos chrono;
@@ -104,6 +112,7 @@ void benchmark::analysis(string type)
 
 			engine::parse_fen(board, chrono, s.fen);
 			engine::depth = s.depth_max;
+			engine::stop = false;
 
 			search::id_frame(board, chrono);
 		}
