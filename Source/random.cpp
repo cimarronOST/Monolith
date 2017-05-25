@@ -1,5 +1,5 @@
 /*
-  Monolith 0.1  Copyright (C) 2017 Jonas Mayr
+  Monolith 0.2  Copyright (C) 2017 Jonas Mayr
 
   This file is part of Monolith.
 
@@ -22,7 +22,8 @@
 
 uint64 rand_xor::rand64()
 {
-	//// xor-shift-prng, idea by George Marsaglia
+	// xor-shift-PRNG
+	// idea by George Marsaglia
 
 	seed ^= seed >> 12;
 	seed ^= seed << 25;

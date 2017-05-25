@@ -1,5 +1,5 @@
 /*
-  Monolith 0.1  Copyright (C) 2017 Jonas Mayr
+  Monolith 0.2  Copyright (C) 2017 Jonas Mayr
 
   This file is part of Monolith.
 
@@ -24,50 +24,39 @@
 #include "bitboard.h"
 #include "movegen.h"
 
+uint64 movegen::knight_table[64]{ 0ULL };
+uint64 movegen::king_table[64]{ 0ULL };
+uint64 movegen::pinned[64];
+uint64 movegen::legal_sq;
+
 namespace
 {
-	magic::magic_s slider[2][64];
-	uint64 slide_ray[2][64];
-
-	uint64 knight_table[64];
-	uint64 king_table[64];
-
-	const int table_size{ 107648 };
-	vector<uint64> attack_table;
-
-	inline void shift_real(uint64 &bb, int shift)
+	inline void real_shift(uint64 &bb, int shift)
 	{
 		bb = (bb << shift) | (bb >> (64 - shift));
 	}
-	
-	struct ray_s
-	{
-		int shift;
-		uint64 boarder;
-	};
 
-	const ray_s ray[]
+	// magic variables
+
+	magic::entry slider[2][64];
+	uint64 slide_ray[2][64];
+
+	vector<uint64> attack_table;
+	const int table_size{ 107648 };
+
+	const magic::pattern ray[]
 	{
-		{ 8, 0xff00000000000000 }, { 7, 0xff01010101010101 },
+		{  8, 0xff00000000000000 }, {  7, 0xff01010101010101 },
 		{ 63, 0x0101010101010101 }, { 55, 0x01010101010101ff },
 		{ 56, 0x00000000000000ff }, { 57, 0x80808080808080ff },
-		{ 1, 0x8080808080808080 }, { 9, 0xff80808080808080 }
+		{  1, 0x8080808080808080 }, {  9, 0xff80808080808080 }
 	};
 
-	const uint64 seeds[]
-	{
-		908859, 953436, 912753, 482262, 322368, 711868, 839234, 305746,
-		711822, 703023, 270076, 964393, 704635, 626514, 970187, 398854
-	};
+	// movegen variables
 
-	uint64 pinned[64];
-	uint64 legal_sq;
-
-	uint64 enemies, friends, king_fr, pawn_rank;
-	uint64 _boarder_left, _boarder_right;
+	uint64 enemies, friends, fr_king, pawn_rank;
+	uint64 not_right, not_left;
 	uint64 gentype[2];
-
-	uint32 sq_king_fr;
 
 	uint8 AHEAD, BACK;
 
@@ -79,45 +68,52 @@ namespace
 	const int push[]{ 8, 56, -8 };
 	const int double_push[]{ 16, 48, -16 };
 
-	const uint64 _file[]{ 0x7f7f7f7f7f7f7f7f, 0xfefefefefefefefe };
-	const uint64 promo_rank{ 0xff000000000000ff };
-	const uint64 sec_rank[]{ 0xff0000, 0xff0000000000 };
+	const uint64 promo_rank{ rank[R1] | rank[R8] };
+	const uint64 third_rank[]{ rank[R3], rank[R6] };
+	const uint64 boarder[]{ file[A], file[H] };
 }
+
+// movegen functions
 
 void movegen::init()
 {
-	for (auto &p : pinned) p = 0xffffffffffffffff;
+	std::fill(pinned, pinned + 64, 0xffffffffffffffff);
 }
 
 int movegen::gen_moves(pos &board, gen_e type)
 {
+	// pawn bitboards
+
 	AHEAD = board.turn;
 	BACK = board.turn * 2;
 
+	not_right = ~boarder[board.turn ^ 1];
+	not_left  = ~boarder[board.turn];
+	pawn_rank = third_rank[board.turn];
+
 	friends = board.side[board.turn];
 	enemies = board.side[board.turn ^ 1];
-	pawn_rank = sec_rank[board.turn];
+	fr_king = board.pieces[KINGS] & friends;
+
+	legal init(board);
 
 	gentype[CAPTURES] = enemies;
 	gentype[QUIETS] = ~board.side[BOTH];
+	move_cnt = promo_cnt = capt_cnt = 0;
 
-	_boarder_right = _file[board.turn ^ 1];
-	_boarder_left = _file[board.turn];
-
-	king_fr = friends & board.pieces[KINGS];
-	bb::bitscan(king_fr);
-	sq_king_fr = bb::lsb();
-
-	move_cnt = 0;
-	pin_cnt = 0;
-
-	legal(board);
-	pin(board);
+	// generating captures
 
 	king_moves(board, CAPTURES);
-	pawn_promo(board);
 	pawn_capt(board);
 	piece_moves(board, CAPTURES);
+	capt_cnt = move_cnt;
+
+	// generating promotions
+
+	pawn_promo(board);
+	promo_cnt = move_cnt - capt_cnt;
+
+	// generating quiets
 
 	if (type == ALL)
 	{
@@ -126,33 +122,14 @@ int movegen::gen_moves(pos &board, gen_e type)
 		king_moves(board, QUIETS);
 	}
 
-	unpin();
 	return move_cnt;
 }
 
 void movegen::pawn_promo(pos &board)
 {
-	uint64 targets{ shift(board.pieces[PAWNS] & friends, push[AHEAD]) & ~board.side[BOTH] & legal_sq & promo_rank };
-	while (targets)
-	{
-		bb::bitscan(targets);
-		uint64 target{ 1ULL << bb::lsb() };
-		auto target_sq{ bb::lsb() };
-		auto origin_sq{ target_sq - push[BACK] };
+	// capture left
 
-		assert((1ULL << origin_sq) & board.pieces[PAWNS] & friends);
-
-		target &= pinned[origin_sq];
-		if (target)
-		{
-			for (int flag{ 15 }; flag >= 12; --flag)
-				movelist[move_cnt++] = encode(origin_sq, target_sq, flag);
-		}
-
-		targets &= targets - 1;
-	}
-
-	targets = shift(board.pieces[PAWNS] & friends & _boarder_left, cap_left[AHEAD]) & legal_sq & promo_rank & enemies;
+	uint64 targets{ shift(board.pieces[PAWNS] & friends & not_left, cap_left[AHEAD]) & legal_sq & promo_rank & enemies };
 	while (targets)
 	{
 		bb::bitscan(targets);
@@ -166,13 +143,15 @@ void movegen::pawn_promo(pos &board)
 		if (target)
 		{
 			for (int flag{ 15 }; flag >= 12; --flag)
-				movelist[move_cnt++] = encode(origin_sq, target_sq, flag);
+				list[move_cnt++] = encode(origin_sq, target_sq, flag);
 		}
 
 		targets &= targets - 1;
 	}
 
-	targets = shift(board.pieces[PAWNS] & friends & _boarder_right, cap_right[AHEAD]) & legal_sq & promo_rank & enemies;
+	// capture right
+
+	targets = shift(board.pieces[PAWNS] & friends & not_right, cap_right[AHEAD]) & legal_sq & promo_rank & enemies;
 	while (targets)
 	{
 		bb::bitscan(targets);
@@ -186,7 +165,29 @@ void movegen::pawn_promo(pos &board)
 		if (target)
 		{
 			for (int flag{ 15 }; flag >= 12; --flag)
-				movelist[move_cnt++] = encode(origin_sq, target_sq, flag);
+				list[move_cnt++] = encode(origin_sq, target_sq, flag);
+		}
+
+		targets &= targets - 1;
+	}
+
+	// single push
+
+	targets = shift(board.pieces[PAWNS] & friends, push[AHEAD]) & ~board.side[BOTH] & legal_sq & promo_rank;
+	while (targets)
+	{
+		bb::bitscan(targets);
+		uint64 target{ 1ULL << bb::lsb() };
+		auto target_sq{ bb::lsb() };
+		auto origin_sq{ target_sq - push[BACK] };
+
+		assert((1ULL << origin_sq) & board.pieces[PAWNS] & friends);
+
+		target &= pinned[origin_sq];
+		if (target)
+		{
+			for (int flag{ 15 }; flag >= 12; --flag)
+				list[move_cnt++] = encode(origin_sq, target_sq, flag);
 		}
 
 		targets &= targets - 1;
@@ -194,7 +195,7 @@ void movegen::pawn_promo(pos &board)
 }
 void movegen::pawn_capt(pos &board)
 {
-	uint64 targets{ shift(board.pieces[PAWNS] & friends & _boarder_left, cap_left[AHEAD]) & ~promo_rank };
+	uint64 targets{ shift(board.pieces[PAWNS] & friends & not_left, cap_left[AHEAD]) & ~promo_rank };
 	uint64 targets_cap{ targets & enemies & legal_sq };
 
 	while (targets_cap)
@@ -208,7 +209,7 @@ void movegen::pawn_capt(pos &board)
 
 		target &= pinned[origin_sq];
 		if (target)
-			movelist[move_cnt++] = encode(origin_sq, target_sq, board.piece_sq[target_sq]);
+			list[move_cnt++] = encode(origin_sq, target_sq, board.piece_sq[target_sq]);
 
 		targets_cap &= targets_cap - 1;
 	}
@@ -224,10 +225,10 @@ void movegen::pawn_capt(pos &board)
 
 		target_ep &= pinned[origin_sq];
 		if (target_ep)
-			movelist[move_cnt++] = encode(origin_sq, target_sq, ENPASSANT);
+			list[move_cnt++] = encode(origin_sq, target_sq, ENPASSANT);
 	}
 
-	targets = shift(board.pieces[PAWNS] & friends & _boarder_right, cap_right[AHEAD]) & ~promo_rank;
+	targets = shift(board.pieces[PAWNS] & friends & not_right, cap_right[AHEAD]) & ~promo_rank;
 	targets_cap = targets & enemies & legal_sq;
 
 	while (targets_cap)
@@ -241,7 +242,7 @@ void movegen::pawn_capt(pos &board)
 
 		target &= pinned[origin_sq];
 		if (target)
-			movelist[move_cnt++] = encode(origin_sq, target_sq, board.piece_sq[target_sq]);
+			list[move_cnt++] = encode(origin_sq, target_sq, board.piece_sq[target_sq]);
 
 		targets_cap &= targets_cap - 1;
 	}
@@ -257,7 +258,7 @@ void movegen::pawn_capt(pos &board)
 
 		target_ep &= pinned[origin_sq];
 		if (target_ep)
-			movelist[move_cnt++] = encode(origin_sq, target_sq, ENPASSANT);
+			list[move_cnt++] = encode(origin_sq, target_sq, ENPASSANT);
 	}
 }
 void movegen::pawn_quiet(pos &board)
@@ -276,7 +277,7 @@ void movegen::pawn_quiet(pos &board)
 
 		target &= pinned[origin_sq];
 		if (target)
-			movelist[move_cnt++] = encode(origin_sq, target_sq, NONE);
+			list[move_cnt++] = encode(origin_sq, target_sq, NONE);
 
 		targets &= targets - 1;
 	}
@@ -293,7 +294,7 @@ void movegen::pawn_quiet(pos &board)
 
 		target &= pinned[origin_sq];
 		if (target)
-			movelist[move_cnt++] = encode(origin_sq, target_sq, NONE);
+			list[move_cnt++] = encode(origin_sq, target_sq, NONE);
 
 		targets2x &= targets2x - 1;
 	}
@@ -302,70 +303,74 @@ void movegen::piece_moves(pos &board, gen_e type)
 {
 	uint64 targets{ 0 };
 
-	////queens
+	// queens
+
 	uint64 pieces{ board.pieces[QUEENS] & friends };
 	while (pieces)
 	{
 		bb::bitscan(pieces);
-		auto queen{ bb::lsb() };
-		targets = slide_att(bishop, queen, board.side[BOTH]) | slide_att(rook, queen, board.side[BOTH]);
-		targets &= gentype[type] & legal_sq & pinned[queen];
+		auto sq{ bb::lsb() };
+		targets = slide_att(BISHOP, sq, board.side[BOTH]) | slide_att(ROOK, sq, board.side[BOTH]);
+		targets &= gentype[type] & legal_sq & pinned[sq];
 
 		while (targets)
 		{
 			bb::bitscan(targets);
-			movelist[move_cnt++] = encode(queen, bb::lsb(), board.piece_sq[bb::lsb()]);
+			list[move_cnt++] = encode(sq, bb::lsb(), board.piece_sq[bb::lsb()]);
 			targets &= targets - 1;
 		}
 		pieces &= pieces - 1;
 	}
 
-	////knights
+	// knights
+
 	pieces = board.pieces[KNIGHTS] & friends;
 	while (pieces)
 	{
 		bb::bitscan(pieces);
-		auto knight{ bb::lsb() };
+		auto sq{ bb::lsb() };
 
-		targets = knight_table[knight] & gentype[type] & legal_sq & pinned[knight];
+		targets = knight_table[sq] & gentype[type] & legal_sq & pinned[sq];
 		while (targets)
 		{
 			bb::bitscan(targets);
-			movelist[move_cnt++] = encode(knight, bb::lsb(), board.piece_sq[bb::lsb()]);
+			list[move_cnt++] = encode(sq, bb::lsb(), board.piece_sq[bb::lsb()]);
 			targets &= targets - 1;
 		}
 		pieces &= pieces - 1;
 	}
 
-	////bishops
+	// bishops
+
 	pieces = board.pieces[BISHOPS] & friends;
 	while (pieces)
 	{
 		bb::bitscan(pieces);
-		auto bishop_sq{ bb::lsb() };
+		auto sq{ bb::lsb() };
 
-		targets = slide_att(bishop, bishop_sq, board.side[BOTH]) & gentype[type] & legal_sq & pinned[bishop_sq];
+		targets = slide_att(BISHOP, sq, board.side[BOTH]) & gentype[type] & legal_sq & pinned[sq];
 		while (targets)
 		{
 			bb::bitscan(targets);
-			movelist[move_cnt++] = encode(bishop_sq, bb::lsb(), board.piece_sq[bb::lsb()]);
+			list[move_cnt++] = encode(sq, bb::lsb(), board.piece_sq[bb::lsb()]);
 			targets &= targets - 1;
 		}
 		pieces &= pieces - 1;
 	}
 
-	////rooks
+	// rooks
+
 	pieces = board.pieces[ROOKS] & friends;
 	while (pieces)
 	{
 		bb::bitscan(pieces);
-		auto rook_sq{ bb::lsb() };
+		auto sq{ bb::lsb() };
 
-		targets = slide_att(rook, rook_sq, board.side[BOTH]) & gentype[type] & legal_sq & pinned[rook_sq];
+		targets = slide_att(ROOK, sq, board.side[BOTH]) & gentype[type] & legal_sq & pinned[sq];
 		while (targets)
 		{
 			bb::bitscan(targets);
-			movelist[move_cnt++] = encode(rook_sq, bb::lsb(), board.piece_sq[bb::lsb()]);
+			list[move_cnt++] = encode(sq, bb::lsb(), board.piece_sq[bb::lsb()]);
 			targets &= targets - 1;
 		}
 		pieces &= pieces - 1;
@@ -373,19 +378,19 @@ void movegen::piece_moves(pos &board, gen_e type)
 }
 void movegen::king_moves(pos &board, gen_e type)
 {
-	uint64 targets{ check(board, board.turn, king_table[sq_king_fr] & gentype[type]) };
+	uint64 targets{ check(board, board.turn, king_table[board.king_sq[board.turn]] & gentype[type]) };
 	while (targets)
 	{
 		bb::bitscan(targets);
-		movelist[move_cnt++] = encode(sq_king_fr, bb::lsb(), board.piece_sq[bb::lsb()]);
+		list[move_cnt++] = encode(board.king_sq[board.turn], bb::lsb(), board.piece_sq[bb::lsb()]);
 		targets &= targets - 1;
 	}
 
-	//// castling
-	if (type == QUIETS && king_fr & 0x800000000000008)
+	// castling
+
+	if (type == QUIETS && fr_king & 0x800000000000008)
 	{
-		const uint64 rank[]{ 0xff, 0xff00000000000000 };
-		const uint64 rank_king{ rank[board.turn] };
+		const uint64 rank_king{ rank[board.turn * 7] };
 
 		const uint8 rights_s[]{ 0x1, 0x10 };
 		const uint8 rights_l[]{ 0x4, 0x40 };
@@ -395,58 +400,58 @@ void movegen::king_moves(pos &board, gen_e type)
 			&& bb::popcnt(check(board, board.turn, 0x0e0000000000000e & rank_king)) == 3)
 			{
 				const uint32 target[]{ 1, 57 };
-				movelist[move_cnt++] = encode(sq_king_fr, target[board.turn], (castl_e::SHORT_WHITE + board.turn * 2));
+				list[move_cnt++] = encode(board.king_sq[board.turn], target[board.turn], (castl_e::SHORT_WHITE + board.turn * 2));
 			}
 		if ((rights_l[board.turn] & board.castl_rights)
 			&& !(board.side[BOTH] & 0x7000000000000070 & rank_king)
 			&& bb::popcnt(check(board, board.turn, 0x3800000000000038 & rank_king)) == 3)
 			{
 				const uint32 target[]{ 5, 61 };
-				movelist[move_cnt++] = encode(sq_king_fr, target[board.turn], (castl_e::LONG_WHITE + board.turn * 2));
+				list[move_cnt++] = encode(board.king_sq[board.turn], target[board.turn], (castl_e::LONG_WHITE + board.turn * 2));
 			}
 	}
 }
 
-void movegen::legal(pos &board)
+void movegen::init_legal(pos &board)
 {
-	const uint64 side[]{ ~(king_fr - 1), king_fr - 1 };
-	assert(king_fr != 0);
+	const uint64 in_front[]{ ~(fr_king - 1), fr_king - 1 };
+	auto king_sq{ board.king_sq[board.turn] };
+	assert(fr_king != 0ULL);
 
-	uint64 attackers{ slide_att(rook, sq_king_fr, board.side[BOTH]) & (board.pieces[ROOKS] | board.pieces[QUEENS]) };
-	attackers |= slide_att(bishop, sq_king_fr, board.side[BOTH]) & (board.pieces[BISHOPS] | board.pieces[QUEENS]);
-	attackers |= knight_table[sq_king_fr] & board.pieces[KNIGHTS];
-	attackers |= king_table[sq_king_fr] & board.pieces[PAWNS] & slide_ray[bishop][sq_king_fr] & side[board.turn];
-	attackers &= enemies;
+	uint64 att{ slide_att(ROOK, king_sq, board.side[BOTH]) & (board.pieces[ROOKS] | board.pieces[QUEENS]) };
+	att |= slide_att(BISHOP, king_sq, board.side[BOTH]) & (board.pieces[BISHOPS] | board.pieces[QUEENS]);
+	att |= knight_table[king_sq] & board.pieces[KNIGHTS];
+	att |= king_table[king_sq] & board.pieces[PAWNS] & slide_ray[BISHOP][king_sq] & in_front[board.turn];
+	att &= enemies;
 
-	int nr_att{ bb::popcnt(attackers) };
+	int nr_att{ bb::popcnt(att) };
 
 	if (nr_att == 0)
+	{
 		legal_sq = 0xffffffffffffffff;
+	}
 	else if (nr_att == 1)
 	{
-		if (attackers & board.pieces[KNIGHTS] || attackers & board.pieces[PAWNS])
-			legal_sq = attackers;
+		if (att & board.pieces[KNIGHTS] || att & board.pieces[PAWNS])
+		{
+			legal_sq = att;
+		}
 		else
 		{
-			assert(attackers & board.pieces[ROOKS] || attackers & board.pieces[BISHOPS] || attackers & board.pieces[QUEENS]);
-			
-			uint64 single_ray[8]{ 0 };
+			assert(att & board.pieces[ROOKS] || att & board.pieces[BISHOPS] || att & board.pieces[QUEENS]);
+			auto every_att{ slide_att(ROOK, king_sq, board.side[BOTH]) | slide_att(BISHOP, king_sq, board.side[BOTH]) };
+
 			for (int dir{ 0 }; dir < 8; ++dir)
 			{
-				uint64 flood{ king_fr };
-				while (!(flood & ray[dir].boarder))
-				{
-					shift_real(flood, ray[dir].shift);
-					single_ray[dir] |= flood;
-				}
-			}
+				auto flood{ fr_king };
+				for (; !(flood & ray[dir].boarder); flood |= shift(flood, ray[dir].shift)) ;
 
-			for (auto &s : single_ray)
-				if (s & attackers)
+				if (flood & att)
 				{
-					legal_sq = s & (slide_att(rook, sq_king_fr, board.side[BOTH]) | slide_att(bishop, sq_king_fr, board.side[BOTH]));
+					legal_sq = flood & every_att;
 					break;
 				}
+			}
 		}
 	}
 	else
@@ -455,87 +460,81 @@ void movegen::legal(pos &board)
 		legal_sq = 0ULL;
 	}
 }
-void movegen::pin(pos &board)
+void movegen::init_pin(pos &board)
 {
-	uint64 single_ray[8]{ 0 };
+	pin_cnt = 0;
+	auto king_sq{ board.king_sq[board.turn] };
 
-	uint64 attackers{ slide_ray[rook][sq_king_fr] & enemies & (board.pieces[ROOKS] | board.pieces[QUEENS]) };
-	attackers |= slide_ray[bishop][sq_king_fr] & enemies & (board.pieces[BISHOPS] | board.pieces[QUEENS]);
+	uint64 att{ slide_ray[ROOK][king_sq] & enemies & (board.pieces[ROOKS] | board.pieces[QUEENS]) };
+	att |= slide_ray[BISHOP][king_sq] & enemies & (board.pieces[BISHOPS] | board.pieces[QUEENS]);
 
-	while (attackers)
+	while (att)
 	{
-		uint64 rays_att{ slide_att(rook, sq_king_fr, attackers) };
-		rays_att |= slide_att(bishop, sq_king_fr, attackers);
+		uint64 ray_to_att{ slide_att(ROOK, king_sq, att) };
+		ray_to_att |= slide_att(BISHOP, king_sq, att);
 
-		uint64 pinning_ray{ 0 };
-
-		bb::bitscan(attackers);
+		bb::bitscan(att);
 		uint64 attacker{ 1ULL << bb::lsb() };
 
-		if (!(attacker & rays_att))
+		if (!(attacker & ray_to_att))
 		{
-			attackers &= attackers - 1;
+			att &= att - 1;
 			continue;
 		}
 
-		assert(king_fr != 0);
+		assert(fr_king);
 
-		if (std::all_of(single_ray, single_ray + 8, [](uint64 i) {return i == 0ULL; }))
+		uint64 x_ray{ 0 };
+		for (int dir{ 0 }; dir < 8; ++dir)
 		{
-			for (int dir{ 0 }; dir < 8; ++dir)
+			auto flood{ fr_king };
+			for (; !(flood & ray[dir].boarder); flood |= shift(flood, ray[dir].shift));
+
+			if (flood & attacker)
 			{
-				uint64 flood{ king_fr };
-				while (!(flood & ray[dir].boarder))
-				{
-					shift_real(flood, ray[dir].shift);
-					single_ray[dir] |= flood;
-				}
+				x_ray = flood & ray_to_att;
+				break;
 			}
 		}
 
-		for (auto &s : single_ray)
-			if (s & attacker)
-			{
-				pinning_ray = s & rays_att;
-				break;
-			}
+		assert(x_ray & attacker);
+		assert(!(x_ray & fr_king));
 
-		assert(pinning_ray & attacker);
+		// pinning all moves of pawns
 
-		if ((pinning_ray & friends) && bb::popcnt(pinning_ray & board.side[BOTH]) == 2)
+		if ((x_ray & friends) && bb::popcnt(x_ray & board.side[BOTH]) == 2)
 		{
-			assert(bb::popcnt(pinning_ray & friends) == 1);
+			assert(bb::popcnt(x_ray & friends) == 1);
 
-			bb::bitscan(pinning_ray & friends);
-			pinned[bb::lsb()] = pinning_ray;
+			bb::bitscan(x_ray & friends);
+			pinned[bb::lsb()] = x_ray;
 			pin_idx[pin_cnt++] = bb::lsb();
 		}
 
-		//// pinning enpassant-moves of pawns
+		// pinning enpassant-moves of pawns
+
 		else if (board.ep_square
-			&& pinning_ray & friends & board.pieces[PAWNS]
-			&& pinning_ray & enemies & board.pieces[PAWNS]
-			&& bb::popcnt(pinning_ray & board.side[BOTH]) == 3)
+			&& x_ray & friends & board.pieces[PAWNS]
+			&& x_ray & enemies & board.pieces[PAWNS]
+			&& bb::popcnt(x_ray & board.side[BOTH]) == 3)
 		{
-			assert(bb::popcnt(pinning_ray & enemies) == 2);
-			uint64 enemy_pawn{ pinning_ray & enemies & board.pieces[PAWNS] };
+			assert(bb::popcnt(x_ray & enemies) == 2);
 
-			if ((pinning_ray & friends & board.pieces[PAWNS]) << 1 == (pinning_ray & enemies & board.pieces[PAWNS])
-				|| (pinning_ray & friends & board.pieces[PAWNS]) >> 1 == (pinning_ray & enemies & board.pieces[PAWNS]))
+			uint64 enemy_pawn{ x_ray & enemies & board.pieces[PAWNS] };
+			uint64 friend_pawn{ x_ray & friends & board.pieces[PAWNS] };
+
+			if (friend_pawn << 1 == enemy_pawn || friend_pawn >> 1 == enemy_pawn)
 			{
-				assert(bb::popcnt(pinning_ray & enemies & board.pieces[PAWNS]) == 1);
-
-				shift_real(enemy_pawn, push[board.turn]);
-
-				if (board.ep_square == enemy_pawn)
+				if (board.ep_square == shift(enemy_pawn, push[board.turn]))
 				{
-					bb::bitscan(pinning_ray & friends);
-					pinned[bb::lsb()] = ~enemy_pawn;
+					bb::bitscan(x_ray & friends);
+					pinned[bb::lsb()] = ~board.ep_square;
 					pin_idx[pin_cnt++] = bb::lsb();
 				}
 			}
 		}
-		attackers &= attackers - 1;
+
+		att &= att - 1;
 	}
 }
 void movegen::unpin()
@@ -547,14 +546,24 @@ void movegen::unpin()
 			pinned[pin_idx[i]] = 0xffffffffffffffff;
 	}
 }
+void movegen::legal::pin_down(pos &board)
+{
+	// used by evaluation
+
+	friends = board.side[board.turn];
+	enemies = board.side[board.turn ^ 1];
+	fr_king = board.pieces[KINGS] & friends;
+
+	init_pin(board);
+}
+
 uint64 movegen::check(pos &board, int turn, uint64 squares)
 {
-	//// returns the squares that are not under attack
+	// returns the squares that are not under attack
 
-	assert(turn == white || turn == black);
+	assert(turn == WHITE || turn == BLACK);
 
 	const uint64 king{ board.side[turn] & board.pieces[KINGS] };
-	uint64 enemy{ board.side[turn ^ 1] };
 	uint64 inquire{ squares };
 
 	while (inquire)
@@ -562,26 +571,25 @@ uint64 movegen::check(pos &board, int turn, uint64 squares)
 		bb::bitscan(inquire);
 		auto sq{ bb::lsb() };
 		const uint64 sq64{ 1ULL << sq };
-		const uint64 side[]{ ~(sq64 - 1), sq64 - 1 };
+		const uint64 in_front[]{ ~(sq64 - 1), sq64 - 1 };
 
-		uint64 attacker{ slide_att(rook, sq, board.side[BOTH] & ~king) & (board.pieces[ROOKS] | board.pieces[QUEENS]) };
-		attacker |= slide_att(bishop, sq, board.side[BOTH] & ~king) & (board.pieces[BISHOPS] | board.pieces[QUEENS]);
-		attacker |= knight_table[sq] & board.pieces[KNIGHTS];
-		attacker |= king_table[sq] & board.pieces[KINGS];
-		attacker |= king_table[sq] & board.pieces[PAWNS] & slide_ray[bishop][sq] & side[turn];
-		attacker &= enemy;
+		uint64 att{ slide_att(ROOK, sq, board.side[BOTH] & ~king) & (board.pieces[ROOKS] | board.pieces[QUEENS]) };
+		att |= slide_att(BISHOP, sq, board.side[BOTH] & ~king) & (board.pieces[BISHOPS] | board.pieces[QUEENS]);
+		att |= knight_table[sq] & board.pieces[KNIGHTS];
+		att |= king_table[sq] & board.pieces[KINGS];
+		att |= king_table[sq] & board.pieces[PAWNS] & slide_ray[BISHOP][sq] & in_front[turn];
+		att &= board.side[turn ^ 1];
 
-		if (attacker)
-			squares ^= sq64;
+		if (att) squares ^= sq64;
+
 		inquire &= inquire - 1;
 	}
 	return squares;
 }
-
-uint64 movegen::slide_att(const uint8 sl, const int sq, uint64 occ)
+uint64 movegen::slide_att(const int sl, const int sq, uint64 occ)
 {
 	assert(sq < 64 && sq >= 0);
-	assert(sl == rook || sl == bishop);
+	assert(sl == ROOK || sl == BISHOP);
 
 	occ &= slider[sl][sq].mask;
 	occ *= slider[sl][sq].magic;
@@ -591,12 +599,14 @@ uint64 movegen::slide_att(const uint8 sl, const int sq, uint64 occ)
 
 uint16 *movegen::find(uint16 move)
 {
-	return std::find(movelist, movelist + move_cnt, move);
+	return std::find(list, list + move_cnt, move);
 }
 bool movegen::in_list(uint16 move)
 {
-	return find(move) != movelist + move_cnt;
+	return find(move) != list + move_cnt;
 }
+
+// magic functions
 
 void magic::init()
 {
@@ -609,7 +619,7 @@ void magic::init()
 	vector<uint64> blocker;
 	blocker.reserve(table_size);
 
-	for (uint8 sl{ rook }; sl <= bishop; ++sl)
+	for (int sl{ ROOK }; sl <= BISHOP; ++sl)
 	{
 		init_mask(sl);
 		init_blocker(sl, blocker);
@@ -618,40 +628,39 @@ void magic::init()
 		init_connect(sl, blocker, attack_temp);
 	}
 }
-void magic::init_mask(uint8 sl)
+
+void magic::init_mask(int sl)
 {
-	assert(sl == rook || sl == bishop);
+	assert(sl == ROOK || sl == BISHOP);
 
 	for (int sq{ 0 }; sq < 64; ++sq)
 	{
-		uint64 square{ 1ULL << sq };
-		assert(slider[sl][sq].mask == 0ULL);
+		uint64 sq64{ 1ULL << sq };
 
 		for (int dir{ sl }; dir < 8; dir += 2)
 		{
-			uint64 flood{ square };
+			uint64 flood{ sq64 };
 			while (!(flood & ray[dir].boarder))
 			{
 				slider[sl][sq].mask |= flood;
-				shift_real(flood, ray[dir].shift);
+				real_shift(flood, ray[dir].shift);
 			}
 		}
-		slider[sl][sq].mask ^= square;
+		slider[sl][sq].mask ^= sq64;
 	}
 }
-void magic::init_blocker(uint8 sl, vector<uint64> &blocker)
+void magic::init_blocker(int sl, vector<uint64> &blocker)
 {
-	bool bit[12]{ false };
-
+	assert(sl == ROOK || sl == BISHOP);
 	assert(blocker.size() == 0U || blocker.size() == 102400U);
+
+	bool bit[12]{ false };
 
 	for (int sq{ 0 }; sq < 64; ++sq)
 	{
-		assert(slider[sl][sq].offset == 0);
-
 		slider[sl][sq].offset = blocker.size();
 
-		uint64 mask_split[12]{};
+		uint64 mask_split[12]{ 0 };
 		int bits_in{ 0 };
 
 		uint64 mask_bit{ slider[sl][sq].mask };
@@ -665,7 +674,6 @@ void magic::init_blocker(uint8 sl, vector<uint64> &blocker)
 		assert(bits_in <= 12);
 		assert(bits_in >= 5);
 		assert(bb::popcnt(slider[sl][sq].mask) == bits_in);
-		assert(slider[sl][sq].shift == 0);
 
 		slider[sl][sq].shift = 64 - bits_in;
 
@@ -684,14 +692,14 @@ void magic::init_blocker(uint8 sl, vector<uint64> &blocker)
 		}
 	}
 }
-void magic::init_move(uint8 sl, vector<uint64> &blocker, vector<uint64> &attack_temp)
+void magic::init_move(int sl, vector<uint64> &blocker, vector<uint64> &attack_temp)
 {
-	assert(sl == rook || sl == bishop);
+	assert(sl == ROOK || sl == BISHOP);
 	assert(attack_temp.size() == 0U || attack_temp.size() == 102400U);
 
 	for (int sq{ 0 }; sq < 64; ++sq)
 	{
-		uint64 square{ 1ULL << sq };
+		uint64 sq64{ 1ULL << sq };
 
 		int max{ 1 << (64 - slider[sl][sq].shift) };
 		for (int cnt{ 0 }; cnt < max; ++cnt)
@@ -700,10 +708,10 @@ void magic::init_move(uint8 sl, vector<uint64> &blocker, vector<uint64> &attack_
 
 			for (int dir{ sl }; dir < 8; dir += 2)
 			{
-				uint64 flood{ square };
+				uint64 flood{ sq64 };
 				while (!(flood & ray[dir].boarder) && !(flood & blocker[slider[sl][sq].offset + cnt]))
 				{
-					shift_real(flood, ray[dir].shift);
+					real_shift(flood, ray[dir].shift);
 					board |= flood;
 				}
 			}
@@ -713,25 +721,29 @@ void magic::init_move(uint8 sl, vector<uint64> &blocker, vector<uint64> &attack_
 		}
 	}
 }
-void magic::init_magic(uint8 sl, vector<uint64> &blocker, vector<uint64> &attack_temp)
+void magic::init_magic(int sl, vector<uint64> &blocker, vector<uint64> &attack_temp)
 {
+	const uint64 seeds[]
+	{
+		908859, 953436, 912753, 482262, 322368, 711868, 839234, 305746,
+		711822, 703023, 270076, 964393, 704635, 626514, 970187, 398854
+	};
+
 	bool fail;
 	for (int sq{ 0 }; sq < 64; ++sq)
 	{
 		vector<uint64> occ;
 
-		int SIZE_occ{ 1 << (64 - slider[sl][sq].shift) };
-		occ.resize(SIZE_occ);
+		int occ_size{ 1 << (64 - slider[sl][sq].shift) };
+		occ.resize(occ_size);
+
 		assert(occ.size() <= 4096U);
+		assert(sq / 4 <= 16 && sq / 4 >= 0);
 
-		assert(static_cast<int>(sq / 4) <= 16);
-		assert(static_cast<int>(sq / 4) >= 0);
-
-		rand_xor rand_gen{ seeds[static_cast<int>(sq / 4)] };
+		rand_xor rand_gen{ seeds[sq / 4] };
 
 		int max{ 1 << (64 - slider[sl][sq].shift) };
 
-		assert(slider[sl][sq].magic == 0ULL);
 		do
 		{
 			do slider[sl][sq].magic = rand_gen.sparse64();
@@ -739,15 +751,16 @@ void magic::init_magic(uint8 sl, vector<uint64> &blocker, vector<uint64> &attack
 
 			fail = false;
 			occ.clear();
-			occ.resize(SIZE_occ);
+			occ.resize(occ_size);
 
 			for (int i{ 0 }; !fail && i < max; ++i)
 			{
-				int index{ static_cast<int>((blocker[slider[sl][sq].offset + i] * slider[sl][sq].magic) >> slider[sl][sq].shift) };
+				auto idx{ (blocker[slider[sl][sq].offset + i] * slider[sl][sq].magic) >> slider[sl][sq].shift };
+				assert(idx <= static_cast<uint64>(occ_size));
 
-				if (!occ[index])
-					occ[index] = attack_temp[slider[sl][sq].offset + i];
-				else if (occ[index] != attack_temp[slider[sl][sq].offset + i])
+				if (!occ[idx])
+					occ[idx] = attack_temp[slider[sl][sq].offset + i];
+				else if (occ[idx] != attack_temp[slider[sl][sq].offset + i])
 				{
 					fail = true;
 					break;
@@ -756,9 +769,9 @@ void magic::init_magic(uint8 sl, vector<uint64> &blocker, vector<uint64> &attack
 		} while (fail);
 	}
 }
-void magic::init_connect(uint8 sl, vector<uint64> &blocker, vector<uint64> &attack_temp)
+void magic::init_connect(int sl, vector<uint64> &blocker, vector<uint64> &attack_temp)
 {
-	assert(sl == rook || sl == bishop);
+	assert(sl == ROOK || sl == BISHOP);
 	assert(attack_table.size() == 0U || attack_table.size() == 102400U);
 
 	for (int sq{ 0 }; sq < 64; ++sq)
@@ -766,28 +779,28 @@ void magic::init_connect(uint8 sl, vector<uint64> &blocker, vector<uint64> &atta
 		int max{ 1 << (64 - slider[sl][sq].shift) };
 
 		for (int cnt{ 0 }; cnt < max; ++cnt)
+		{
 			attack_table[slider[sl][sq].offset +
-			(static_cast<int>((blocker[slider[sl][sq].offset + cnt] * slider[sl][sq].magic)
-				>> slider[sl][sq].shift))]
-			= attack_temp[slider[sl][sq].offset + cnt];
+				((blocker[slider[sl][sq].offset + cnt] * slider[sl][sq].magic) >> slider[sl][sq].shift)]
+				= attack_temp[slider[sl][sq].offset + cnt];
+		}
 	}
 }
 
-void magic::init_ray(uint8 sl)
+void magic::init_ray(int sl)
 {
-	assert(sl == rook || sl == bishop);
+	assert(sl == ROOK || sl == BISHOP);
 
 	for (int sq{ 0 }; sq < 64; ++sq)
 	{
-		uint64 square{ 1ULL << sq };
-		assert(slide_ray[sl][sq] == 0ULL);
+		uint64 sq64{ 1ULL << sq };
 
 		for (int dir{ sl }; dir < 8; dir += 2)
 		{
-			uint64 flood{ square };
+			uint64 flood{ sq64 };
 			while (!(flood & ray[dir].boarder))
 			{
-				shift_real(flood, ray[dir].shift);
+				real_shift(flood, ray[dir].shift);
 				slide_ray[sl][sq] |= flood;
 			}
 		}
@@ -797,24 +810,22 @@ void magic::init_king()
 {
 	for (int sq{ 0 }; sq < 64; ++sq)
 	{
-		uint64 square{ 1ULL << sq };
-		assert(king_table[sq] == 0ULL);
+		uint64 sq64{ 1ULL << sq };
 
 		for (int dir{ 0 }; dir < 8; ++dir)
 		{
-			uint64 att{ square };
+			uint64 att{ sq64 };
+
 			if (!(att & ray[dir].boarder))
-			{
-				king_table[sq] |= shift(att, ray[dir].shift);
-			}
+				movegen::king_table[sq] |= shift(att, ray[dir].shift);
 		}
 	}
 }
 void magic::init_knight()
 {
-	const ray_s pattern[]
+	const pattern jump[]
 	{
-		{ 15, 0xffff010101010101 },{ 6, 0xff03030303030303 },
+		{ 15, 0xffff010101010101 },{  6, 0xff03030303030303 },
 		{ 54, 0x03030303030303ff },{ 47, 0x010101010101ffff },
 		{ 49, 0x808080808080ffff },{ 58, 0xc0c0c0c0c0c0c0ff },
 		{ 10, 0xffc0c0c0c0c0c0c0 },{ 17, 0xffff808080808080 }
@@ -822,16 +833,27 @@ void magic::init_knight()
 
 	for (int sq{ 0 }; sq < 64; ++sq)
 	{
-		uint64 square{ 1ULL << sq };
-		assert(knight_table[sq] == 0ULL);
+		uint64 sq64{ 1ULL << sq };
 
 		for (int dir{ 0 }; dir < 8; ++dir)
 		{
-			uint64 att{ square };
-			if (!(att & pattern[dir].boarder))
-			{
-				knight_table[sq] |= shift(att, pattern[dir].shift);
-			}
+			uint64 att{ sq64 };
+			if (!(att & jump[dir].boarder))
+				movegen::knight_table[sq] |= shift(att, jump[dir].shift);
 		}
 	}
+}
+
+// attack table functions
+
+uint64 attack::by_pawns(pos &board, int col)
+{
+	// returns all squares attacked by pawns of int color
+
+	assert(col == WHITE || col == BLACK);
+
+	uint64 att_table{ shift(board.pieces[PAWNS] & board.side[col] & ~boarder[col], cap_left[col]) };
+	att_table |= shift(board.pieces[PAWNS] & board.side[col] & ~boarder[col ^ 1], cap_right[col]);
+	
+	return att_table;
 }

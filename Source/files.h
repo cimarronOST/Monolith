@@ -1,5 +1,5 @@
 /*
-  Monolith 0.1  Copyright (C) 2017 Jonas Mayr
+  Monolith 0.2  Copyright (C) 2017 Jonas Mayr
 
   This file is part of Monolith.
 
@@ -58,7 +58,7 @@ public:
 
 namespace files
 {
-	void set_path(string &path);
+	void set_path(const string &path);
 	string get_path();
 
 	bool open();

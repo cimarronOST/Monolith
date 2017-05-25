@@ -1,5 +1,5 @@
 /*
-  Monolith 0.1  Copyright (C) 2017 Jonas Mayr
+  Monolith 0.2  Copyright (C) 2017 Jonas Mayr
 
   This file is part of Monolith.
 
@@ -22,21 +22,23 @@
 #include "uci.h"
 #include "main.h"
 
-int main(int argc, char** argv)
+namespace
 {
-	std::cout << "Monolith " << version << endl;
-
-	static_assert(sizeof(uint8)  == 1, "char");
+	static_assert(sizeof(uint8) == 1, "char");
 	static_assert(sizeof(uint16) == 2, "short");
 	static_assert(sizeof(uint32) == 4, "int");
 	static_assert(sizeof(uint64) == 8, "long long");
+}
+
+int main(int argc, char** argv)
+{
+	std::cout << "Monolith " << version << endl;
 
 	engine::init_path(*argv);
 	engine::init_book();
 	engine::init_rand();
 	engine::init_movegen();
 	engine::init_eval();
-	engine::init_hash(engine::hash_size);
 
 	uci::loop();
 

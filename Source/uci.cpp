@@ -1,5 +1,5 @@
 /*
-  Monolith 0.1  Copyright (C) 2017 Jonas Mayr
+  Monolith 0.2  Copyright (C) 2017 Jonas Mayr
 
   This file is part of Monolith.
 
@@ -18,7 +18,6 @@
 */
 
 
-///#undef GTHR_ACTIVE_PROXY
 #include <thread>
 #include <sstream>
 
@@ -43,8 +42,6 @@ namespace
 
 void uci::search(pos *board, chronos *chrono)
 {
-	engine::stop = false;
-
 	auto best_move{ engine::alphabeta(*board, *chrono) };
 
 	assert(best_move != 0);
@@ -92,13 +89,9 @@ void uci::loop()
 			std::cout
 				<< "id name Monolith " << version << "\n"
 				<< "id author Jonas Mayr\n\n"
-				<< "option name OwnBook type check default " << (engine::play_with_book ? "true\n" : "false\n")
-				<< "option name Hash type spin default " << engine::hash_size << " min 1 max " << lim::hash << "\n"
 
-				<< "option name Futility Pruning type check default false\n"
-				<< "option name Ponder type check default false\n"
-				<< "option name UCI_Chess960 type check default false\n"
-				<< "option name UCI_ShowCurrLine type check default false\n";
+				<< "option name OwnBook type check default " << (engine::use_book ? "true\n" : "false\n")
+				<< "option name Hash type spin default " << engine::hash_size << " min 1 max " << lim::hash << "\n";
 			std::cout
 				<< "uciok" << endl;
 		}
@@ -122,11 +115,22 @@ void uci::loop()
 
 			stream >> token;
 			string name;
-			if (stream >> name && name == "hash")
+			stream >> name;
+			if (name == "hash" || name == "Hash")
 			{
 				stream >> token;
 				if(stream >> token)
-					engine::init_hash(stoi(token));
+					engine::new_hash_size(stoi(token));
+			}
+			else if (name == "ownbook" || name == "OwnBook")
+			{
+				stream >> token, stream >> token;
+
+				if (token == "true")
+					engine::use_book = true;
+
+				else if (token == "false")
+					engine::use_book = false;
 			}
 		}
 		else if (token == "position")
@@ -199,25 +203,25 @@ void uci::loop()
 				else if (token == "wtime")
 				{
 					stream >> token;
-					chrono.time[white] = stoi(token);
+					chrono.time[WHITE] = stoi(token);
 					chrono.only_movetime = false;
 				}
 				else if (token == "btime")
 				{
 					stream >> token;
-					chrono.time[black] = stoi(token);
+					chrono.time[BLACK] = stoi(token);
 					chrono.only_movetime = false;
 				}
 				else if (token == "winc")
 				{
 					stream >> token;
-					chrono.incr[white] = stoi(token);
+					chrono.incr[WHITE] = stoi(token);
 					chrono.only_movetime = false;
 				}
 				else if (token == "binc")
 				{
 					stream >> token;
-					chrono.incr[black] = stoi(token);
+					chrono.incr[BLACK] = stoi(token);
 					chrono.only_movetime = false;
 				}
 				else if (token == "movestogo")
@@ -227,7 +231,7 @@ void uci::loop()
 					chrono.only_movetime = false;
 				}
 			}
-			if (engine::play_with_book && engine::get_book_move(board))
+			if (engine::use_book && engine::get_book_move(board))
 			{
 				uint16 move{ engine::get_book_move(board) };
 
@@ -238,7 +242,7 @@ void uci::loop()
 				engine::new_move(board, sq1, sq2, flag);
 
 				log::cout
-					<< "info string move from openingbook\n"
+					<< "info string book move\n"
 					<< "bestmove "
 					<< conv::to_str(sq1)
 					<< conv::to_str(sq2)
@@ -253,7 +257,5 @@ void uci::loop()
 
 	} while (input != "quit");
 
-	//// cleaning up
 	stop_thread_if(searching);
-	engine::delete_hash();
 }

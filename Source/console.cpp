@@ -1,5 +1,5 @@
 /*
-  Monolith 0.1  Copyright (C) 2017 Jonas Mayr
+  Monolith 0.2  Copyright (C) 2017 Jonas Mayr
 
   This file is part of Monolith.
 
@@ -92,9 +92,6 @@ void console::loop()
 			stop_thread_if(searching, board);
 
 			engine::new_game(board, chrono);
-			/*
-			string fen{ "" };
-			engine::parse_fen(board, chrono, fen); //*/
 
 			print(board);
 			state = ACTIVE;
@@ -103,7 +100,7 @@ void console::loop()
 		{
 			stop_thread_if(searching, board);
 
-			if (engine::play_with_book && engine::get_book_move(board))
+			if (engine::use_book && engine::get_book_move(board))
 			{
 				uint16 move{ engine::get_book_move(board) };
 
@@ -115,7 +112,7 @@ void console::loop()
 				engine::new_move(board, sq1, sq2, flag);
 
 				print(board);
-				log::cout << "openingbook\n" << move_nr(board) << "." << move_str << endl;
+				log::cout << "bookmove\n" << move_nr(board) << "." << move_str << endl;
 			}
 			else
 			{
@@ -147,12 +144,12 @@ void console::loop()
 					stream >> token;
 					if (token == "true")
 					{
-						engine::play_with_book = true;
+						engine::use_book = true;
 						log::cout << "openingbook set to <true>" << endl;
 					}
 					else if (token == "false")
 					{
-						engine::play_with_book = false;
+						engine::use_book = false;
 						log::cout << "openingbook set to <false>" << endl;
 					}
 				}
@@ -160,9 +157,8 @@ void console::loop()
 				{
 					if (stream >> token)
 					{
-						hashing::tt_delete();
-						int size{ hashing::tt_create(stoi(token)) };
-						log::cout << "hash set to " << size << " MB" << endl;
+						engine::new_hash_size(stoi(token));
+						log::cout << "hash set to " << engine::hash_size << " MB" << endl;
 					}
 				}
 				else std::cerr << "set \'<option> <value>\'" << endl;
@@ -224,7 +220,9 @@ void console::loop()
 		{
 			stop_thread_if(searching, board);
 		}
-		//// move input
+
+		// move input
+
 		else if (conv::san_to_move(board, input))
 		{
 			stop_thread_if(searching, board);
@@ -296,12 +294,12 @@ void console::update_state(pos &board)
 		else
 			state = CHECKMATE;
 	}
-	else if (draw::verify(board, game::hashlist))
+	else if (draw::verify(board, game::hashlist, 0))
 		state = ISDRAW;
 	else
 		state = ACTIVE;
 }
-void console::to_char(pos &board, char board_char[])
+void console::to_char(const pos &board, char board_char[])
 {
 	const char p_char[][8]
 	{
@@ -309,20 +307,20 @@ void console::to_char(pos &board, char board_char[])
 		{ 'p', 'r', 'n', 'b', 'q', 'k' }
 	};
 
-	for (int color{ WHITE }; color <= BLACK; ++color)
+	for (int col{ WHITE }; col <= BLACK; ++col)
 	{
-		uint64 pieces{ board.side[color] };
+		uint64 pieces{ board.side[col] };
 		while (pieces)
 		{
 			auto sq{ engine::bitscan(pieces) };
 			auto piece{ board.piece_sq[sq] };
 
-			board_char[sq] = p_char[color][piece];
+			board_char[sq] = p_char[col][piece];
 			pieces &= pieces - 1;
 		}
 	}
 }
-void console::print(pos &board)
+void console::print(const pos &board)
 {
 	char board_char[64]{ 0 };
 	to_char(board, board_char);
