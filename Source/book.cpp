@@ -1,5 +1,5 @@
 /*
-  Monolith 0.1  Copyright (C) 2017 Jonas Mayr
+  Monolith 0.2  Copyright (C) 2017 Jonas Mayr
 
   This file is part of Monolith.
 
@@ -18,7 +18,7 @@
 */
 
 
-//// this file is based on the book.cpp code from PolyGlot by Fabien Letouzey
+// this file is based on the book.cpp code from PolyGlot by Fabien Letouzey
 
 #include <fstream>
 
@@ -104,11 +104,13 @@ uint16 book::get_move(pos &board)
 
 			if (piece == PAWNS)
 			{
-				//// enpassant
+				// enpassant
+
 				if ((~board.side[BOTH] & (1ULL << sq2)) && abs(sq1 - sq2) % 8 != 0)
 					flag = ENPASSANT;
 
-				//// promotion
+				// promotion
+
 				switch ((best_move & 0x7000) >> 12)
 				{
 				case 1: flag = PROMO_KNIGHT; break;
@@ -119,42 +121,45 @@ uint16 book::get_move(pos &board)
 				}
 			}
 
-			//// castling
+			// castling
+
 			else if (piece == KINGS)
 			{
-				if (sq1 == e1)
+				if (sq1 == E1)
 				{
-					if (sq2 == h1) sq2 = g1, flag = castl_e::SHORT_WHITE;
-					else if (sq2 == a1) sq2 = c1, flag = castl_e::LONG_WHITE;
+					if (sq2 == H1) sq2 = G1, flag = castl_e::SHORT_WHITE;
+					else if (sq2 == A1) sq2 = C1, flag = castl_e::LONG_WHITE;
 				}
-				else if (sq1 == e8)
+				else if (sq1 == E8)
 				{
-					if (sq2 == h8) sq2 = g8, flag = castl_e::SHORT_BLACK;
-					else if (sq2 == a8) sq2 = c8, flag = castl_e::LONG_BLACK;
+					if (sq2 == H8) sq2 = G8, flag = castl_e::SHORT_BLACK;
+					else if (sq2 == A8) sq2 = C8, flag = castl_e::LONG_BLACK;
 				}
 			}
 
 			uint16 real_move{ encode(sq1, sq2, flag) };
 
-			//// returning only legal moves
+			// returning only legal moves
+
 			movegen gen(board, ALL);
 			if(gen.in_list(real_move))
 				return real_move;
 		}
 	}
 
-	engine::play_with_book = false;
+	engine::use_book = false;
 	return 0;
 }
 
-int book::find_key(uint64 &key)
+int book::find_key(const uint64 &key)
 {
 	int left{ 0 };
 	int right{ book_size - 1 };
 	int mid;
 	book_entry entry;
 
-	//// binary search (finds the leftmost entry)
+	// binary search, finds the leftmost entry
+
 	assert(left <= right);
 	while (left < right)
 	{
