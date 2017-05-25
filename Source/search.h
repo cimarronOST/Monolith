@@ -1,5 +1,5 @@
 /*
-  Monolith 0.1  Copyright (C) 2017 Jonas Mayr
+  Monolith 0.2  Copyright (C) 2017 Jonas Mayr
 
   This file is part of Monolith.
 
@@ -20,6 +20,7 @@
 
 #pragma once
 
+#include "movegen.h"
 #include "position.h"
 #include "chronos.h"
 #include "main.h"
