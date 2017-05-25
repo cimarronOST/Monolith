@@ -1,5 +1,5 @@
 /*
-  Monolith 0.1  Copyright (C) 2017 Jonas Mayr
+  Monolith 0.2  Copyright (C) 2017 Jonas Mayr
 
   This file is part of Monolith.
 
@@ -25,15 +25,15 @@
 
 namespace conv
 {
-	uint64 to_bb(string sq);
-	int to_int(string sq);
+	uint64 to_bb(const string sq);
+	int to_int(const string sq);
 
-	string to_str(uint64 &sq);
-	string to_str(int sq);
+	string to_str(const uint64 &sq);
+	string to_str(const int sq);
 
 	uint16 san_to_move(pos &board, string move);
-	string bit_to_san(pos &board, uint64 &sq1, uint64 &sq2, uint8 flag);
+	string bit_to_san(pos &board, const uint64 &sq1, const uint64 &sq2, uint8 flag);
 
 	string to_promo(uint8 flag);
-	uint8 to_flag(char promo, pos &board, uint64 &sq1, uint64 &sq2);
+	uint8 to_flag(char promo, const pos &board, const uint64 &sq1, const uint64 &sq2);
 }
