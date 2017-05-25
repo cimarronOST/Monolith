@@ -1,20 +1,20 @@
 /*
-  Monolith 0.1  Copyright(C) 2017 Jonas Mayr
+  Monolith 0.2  Copyright (C) 2017 Jonas Mayr
 
   This file is part of Monolith.
 
-  Monolith is free software : you can redistribute it and/or modify
+  Monolith is free software: you can redistribute it and/or modify
   it under the terms of the GNU General Public License as published by
   the Free Software Foundation, either version 3 of the License, or
   (at your option) any later version.
 
   Monolith is distributed in the hope that it will be useful,
   but WITHOUT ANY WARRANTY; without even the implied warranty of
-  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.See the
+  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
   GNU General Public License for more details.
 
   You should have received a copy of the GNU General Public License
-  along with Monolith.If not, see <http://www.gnu.org/licenses/>.
+  along with Monolith. If not, see <http://www.gnu.org/licenses/>.
 */
 
 
@@ -25,7 +25,7 @@
 
 namespace hashing
 {
-	//// random numbers from PolyGlot by Fabien Letouzey
+	// random numbers from PolyGlot by Fabien Letouzey
 
 	const uint64 random64[]
 	{
@@ -223,22 +223,25 @@ namespace hashing
 		0x5FA7867CAF35E149ULL, 0x56986E2EF3ED091BULL, 0x917F1DD5F8886C61ULL, 0xD20D8C88C8FFE65FULL,
 		0x31D71DCE64B2C310ULL, 0xF165B587DF898190ULL, 0xA57E6339DD2CF3A0ULL, 0x1EF6E6DBB1961EC9ULL,
 		0x70CC73D90BC26E24ULL, 0xE21A6B35DF0C3AD7ULL, 0x003A93D8B2806962ULL, 0x1C99DED33CB890A1ULL,
-		0xCF3145DE0ADD4289ULL, 0xD0E4427A5514FB72ULL, 0x77C621CC9FB3A483ULL, 0x67A34DAC4356550BULL
-	};
-	const uint64 is_turn[]
-	{
-		0xF8D626AAAF278509ULL,
-		0x0ULL
+		0xCF3145DE0ADD4289ULL, 0xD0E4427A5514FB72ULL, 0x77C621CC9FB3A483ULL, 0x67A34DAC4356550BULL,
+		0xF8D626AAAF278509ULL
 	};
 
-	//// hash constants
+	// hash constants
 
 	const struct offset_s
 	{
 		const int castl{ 768 };
 		const int ep{ 772 };
+		const int turn{ 780 };
 	}
 	offset;
+
+	const uint64 is_turn[]
+	{
+		random64[offset.turn],
+		0ULL
+	};
 
 	const uint64 ep_flank[][8]
 	{
@@ -251,18 +254,50 @@ namespace hashing
 			0x2800000000, 0x5000000000, 0xa000000000, 0x4000000000
 		}
 	};
+
 	const int piece_12[]{ 1, 7, 3, 5, 9, 11 };
 
-	//// hash function
+	// hash function
 
-	uint64 to_key(pos &board);
+	uint64 to_key(const pos &board);
+};
 
-	//// transposition table
+// transposition table
 
-	int tt_create(uint64 size);
-	void tt_clear();
-	void tt_delete();
+class tt
+{
+private:
 
-	void tt_save(pos &board, uint16 move, int score, int ply, uint8 flag);
-	bool tt_probe(int ply, int alpha, int beta, pos &board, int &score, uint16 &move, uint8 &flag);
+	struct trans
+	{
+		uint64 key;
+		uint16 move;
+		int16 score;
+		uint8 ply;
+		uint8 flag;
+	};
+
+	static trans* table;
+	void erase();
+
+public:
+
+	tt() { }
+	tt(uint64 size)
+	{
+		erase();
+		create(size);
+	}
+	~tt()
+	{
+		erase();
+	}
+
+	static uint64 tt_size;
+
+	int create(uint64 size);
+	void clear();
+
+	static void store(const pos &board, uint16 move, int score, int ply, int depth, uint8 flag);
+	static bool probe(const pos &board, uint16 &move, int &score, int ply, int depth, uint8 &flag);
 };
