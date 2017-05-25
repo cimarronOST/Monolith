@@ -1,5 +1,5 @@
 /*
-  Monolith 0.1  Copyright (C) 2017 Jonas Mayr
+  Monolith 0.2  Copyright (C) 2017 Jonas Mayr
 
   This file is part of Monolith.
 
@@ -18,78 +18,137 @@
 */
 
 
+#include "bitboard.h"
+#include "sort.h"
 #include "files.h"
 #include "evaluation.h"
 #include "hash.h"
 #include "convert.h"
-#include "movegen.h"
 #include "engine.h"
 #include "game.h"
 #include "search.h"
 
 namespace
 {
-	//// analysis variables
-	uint64 all_nodes;
-	double last_nodes;
-	double ebf;
-	int ebf_count;
+	// analysis variables
 
-	//// search variables
+	struct results
+	{
+		uint64 all_nodes;
+		double prev_nodes;
+		double factor;
+		int count;
+	} ebf;
+
+	// search variables
+
 	uint16 pv_evol[lim::depth][lim::depth];
 	const auto last{ lim::depth - 1 };
 
 	uint64 hashlist[lim::period];
 	bool no_pruning[lim::depth]{ false };
 
-	int max_time;
-	timer total_time;
+	// move ordering variables
+
+	uint16 killer[lim::depth][2]{};
+	int history[2][6][64]{};
+	const int max_history{ 1 << 30 };
+
+	struct time_management
+	{
+		int max;
+		timer manage;
+	} spare_time;
+
 	movegen root;
 
-	//// search helping functions
-	bool time_is_up()
+	// search helping functions
+
+	inline bool time_is_up()
 	{
-		return total_time.elapsed() >= max_time;
+		return spare_time.manage.elapsed() >= spare_time.max;
 	}
-	bool is_check(pos &board)
+	inline bool is_check(pos &board)
 	{
 		movegen gen;
 		return gen.check(board, board.turn, board.pieces[KINGS] & board.side[board.turn]) == 0ULL;
 	}
-	bool is_promo(uint16 move)
+	inline bool is_promo(uint16 move)
 	{
-		return to_flag(move) < 12;
+		static_assert(PROMO_ROOK == 12, "promo encoding");
+		return to_flag(move) >= PROMO_ROOK;
+	}
+	inline void update_killer(uint16 move, int depth)
+	{
+		if (move == killer[depth][0] || move == killer[depth][1])
+			return;
+
+		killer[depth][1] = killer[depth][0];
+		killer[depth][0] = move;
+	}
+	inline void update_history(const pos &board, uint16 move, int piece, int ply)
+	{
+		auto *h{ &history[board.turn][piece][to_sq2(move)] };
+		*h += ply * ply;
+
+		if (*h > max_history)
+		{
+			for (auto &i : history) for (auto &j : i) for (auto &h : j) h /= 2;
+		}
+	}
+	inline void update_heuristics(const pos &board, uint16 move, int ply, int depth)
+	{
+		auto flag{ to_flag(move) };
+
+		// normal quiet move
+
+		if (flag == NONE)
+		{
+			auto piece{ board.piece_sq[to_sq1(move)] };
+			auto new_kill{ (move & 0xfff) | (piece << 12) };
+
+			update_history(board, move, piece, ply);
+			update_killer(new_kill, depth);
+		}
+
+		// castling
+
+		else if (flag >= castl_e::SHORT_WHITE && flag <= castl_e::LONG_BLACK)
+		{
+			update_history(board, move, KINGS, ply);
+			update_killer(move, depth);
+		}
 	}
 }
 
 void analysis::reset()
 {
-	all_nodes = 0;
-	last_nodes = 0;
-	ebf = 0;
-	ebf_count = 0;
+	ebf.all_nodes = 0;
+	ebf.prev_nodes = 0;
+	ebf.factor = 0;
+	ebf.count = 0;
 }
 
 #ifdef DEBUG
 
 void analysis::summary(timer &time)
 {
-	auto analysis_time{ time.elapsed() };
-	ebf /= ebf_count;
+	auto total_time{ time.elapsed() };
+	ebf.factor /= ebf.count;
 
 	log::cout.precision(3);
-	log::cout << std::fixed << endl
-		<< "=========================\n"
-		<< "time : " << analysis_time << " ms\n"
-		<< "nodes: " << all_nodes << "\n"
-		<< "nps  : " << all_nodes / analysis_time / 1000.0 << "M\n"
-		<< "ebf  : " << ebf << endl << endl;
+	log::cout << std::fixed
+		<< "\n=========================\n"
+		<< "time : " << total_time << " ms\n"
+		<< "nodes: " << ebf.all_nodes << "\n"
+		<< "nps  : " << ebf.all_nodes / total_time / 1000.0 << "M\n"
+		<< "ebf  : " << ebf.factor << endl << endl;
 }
 void analysis::root_perft(pos &board, int depth_min, int depth_max)
 {
-	assert(depth_min >= 1);
-	assert(depth_max >= 1);
-	ebf_count = 1;
+	assert(depth_min >= 1 && depth_min <= lim::depth);
+	assert(depth_max >= 1 && depth_max <= lim::depth);
+	ebf.count = 1;
 
 	for (int depth{ depth_min }; depth <= depth_max; ++depth)
 	{
@@ -97,7 +156,7 @@ void analysis::root_perft(pos &board, int depth_min, int depth_max)
 		log::cout << "perft " << depth << ": ";
 
 		uint64 nodes{ perft(board, depth) };
-		all_nodes += nodes;
+		ebf.all_nodes += nodes;
 
 		log::cout.precision(3);
 		log::cout << nodes << " time " << perft_time.elapsed()
@@ -108,21 +167,14 @@ uint64 analysis::perft(pos &board, int depth)
 {
 	uint64 nodes{ 0 };
 
-	/*
-	if (depth == 1)
-	{
-		movegen gen(board, ALL);
-		return gen.move_cnt;
-	}*/
 	if (depth == 0) return 1;
 
 	movegen gen(board, ALL);
-
 	pos save(board);
 
 	for (int i{ 0 }; i < gen.move_cnt; ++i)
 	{
-		board.new_move(gen.movelist[i]);
+		board.new_move(gen.list[i]);
 
 		nodes += perft(board, depth - 1);
 		board = save;
@@ -138,26 +190,31 @@ uint16 search::id_frame(pos &board, chronos &chrono)
 	assert(engine::depth >= 1);
 	assert(engine::depth <= lim::depth);
 	
-	total_time.start();
-	max_time = chrono.get_movetime(board.turn);
+	spare_time.manage.start();
+	spare_time.max = chrono.get_movetime(board.turn);
+	assert(spare_time.max > 0);
 	
+	// initialising variables
+
 	uint16 pv[lim::depth]{ 0 };
 	uint16 best_move{ 0 };
-	string ply_str, score_str;
 
 	for (int i{ abs(game::moves - 2) }; i <= game::moves; ++i)
 		hashlist[i] = game::hashlist[i];
 
-	for (auto &i : pv_evol)
-	{
-		for (auto &p : i) p = 0;
-	}
+	// resetting
+
+	for (auto &i : pv_evol) for (auto &p : i) p = 0;
+	for (auto &i : killer)  for (auto &k : i) k = 0;
+	for (auto &i : history) for (auto &j : i) for (auto &h : j) h = 1;
+
+	// generating root moves
 
 	root.gen_moves(board, ALL);
 	if (root.move_cnt == 1)
-	{
-		return root.movelist[0];
-	}
+		return root.list[0];
+
+	// iterative deepening loop
 
 	for (int ply{ 1 }; ply <= engine::depth; ++ply)
 	{
@@ -172,34 +229,37 @@ uint16 search::id_frame(pos &board, chronos &chrono)
 		{
 			best_move = pv[0];
 
-			//// effective branching factor
-			all_nodes += board.nodes;
-			if (last_nodes != 0)
-			{
-				ebf += board.nodes / last_nodes;
-				ebf_count += 1;
-			}
-			last_nodes = static_cast<double>(board.nodes);
+			// effective branching factor
 
-			//// nodes per second
+			ebf.all_nodes += board.nodes;
+			if (ebf.prev_nodes != 0)
+			{
+				ebf.factor += board.nodes / ebf.prev_nodes;
+				ebf.count += 1;
+			}
+			ebf.prev_nodes = static_cast<double>(board.nodes);
+
+			// nodes per second
+
 			assert(board.nodes != 0);
 			auto nps{ static_cast<int>(board.nodes * 1000 / (interim + 1)) };
-			string nodes_str{ std::to_string(board.nodes) };
 
-			//// depth & seldepth
+			// depth & seldepth
+
 			auto seldepth{ ply };
 			for (; seldepth < lim::depth; ++seldepth)
 			{
 				if (pv[seldepth] == 0)
 					break;
 			}
-			ply_str = std::to_string(ply);
-			if (engine::stop) ply_str = std::to_string(ply - 1);
+			auto real_depth{ ply };
+			if (engine::stop)
+				real_depth = ply - 1;
 
-			//// cutting redundant pv-entries after mate
+			// cutting redundant pv-entries
+
 			for (int i{ score_e::MATE - abs(score) }; i < seldepth; pv[i++] = 0);
 
-			//// cutting redundant pv-entries after draw
 			if (score == score_e::DRAW)
 			{
 				pos saved(board);
@@ -216,17 +276,17 @@ uint16 search::id_frame(pos &board, chronos &chrono)
 				board = saved;
 			}
 
-			//// score
+			// score
+
+			string score_str{ "cp " + std::to_string(score) };
 			if (abs(score) >= score_e::MAX)
 				score_str = "mate " + std::to_string((score_e::MATE - abs(score) + 1) / 2);
-			else
-				score_str = "cp " + std::to_string(score);
 			
 			log::cout << "info"
-				<< " depth " << ply_str
-				<< " seldepth " << std::to_string(seldepth)
+				<< " depth " << real_depth
+				<< " seldepth " << seldepth
 				<< " score " << score_str
-				<< " nodes " << nodes_str
+				<< " nodes " << board.nodes
 				<< " nps " << nps
 				<< " time " << interim
 				<< " pv ";
@@ -243,7 +303,8 @@ uint16 search::id_frame(pos &board, chronos &chrono)
 			if (engine::stop || time_is_up() || score > score_e::MAX)
 				break;
 
-			//// allowing 5 extra plies when drawing or getting mated
+			// allowing 5 extra plies when drawing or getting mated
+
 			if (ply >= 5 && pv[ply - 5] == 0)
 				break;
 		}
@@ -254,165 +315,171 @@ uint16 search::id_frame(pos &board, chronos &chrono)
 }
 void search::root_alphabeta(pos &board, uint16 pv[], int &best_score, int ply)
 {
-	//// principal variation from the last iteration
+	uint16 *best_move{ nullptr };
+
 	if (pv[0])
 	{
 		assert(root.in_list(pv[0]));
 
-		std::swap(root.movelist[0], root.movelist[1]);
-		std::swap(root.movelist[0], *root.find(pv[0]));
+		best_move = root.find(pv[0]);
 
 		for (int i{ 0 }; pv[i] != 0; ++i)
-		{
 			pv_evol[last][i] = pv[i];
-		}
+		pv[0] = 0;
 	}
 
+	sort list(board, root, best_move, history);
 	pos saved(board);
-	int alpha{ -score_e::MATE };
+
 	int beta{ score_e::MATE };
-	int score;
+	int alpha{ -beta };
 
-	for (int nr{ 0 }; nr < root.move_cnt && !engine::stop; ++nr)
+	for (auto move{ list.next(root) }; move && !engine::stop; move = list.next(root))
 	{
-		assert(root.movelist[nr] != 0);
 		assert(beta > alpha);
+		assert(root.in_list(move));
 
-		board.new_move(root.movelist[nr]);
+		board.new_move(move);
 
-		score = -alphabeta(board, ply - 1, 1, -alpha, -beta);
+		int score{ -alphabeta(board, ply - 1, 1, -alpha, -beta) };
 		board = saved;
 
 		if (score > alpha && !engine::stop)
 		{
 			alpha = score;
-			pv[0] = root.movelist[nr];
+			pv[0] = move;
 			for (int i{ 0 }; pv_evol[0][i] != 0; ++i)
 			{
 				pv[i + 1] = pv_evol[0][i];
 			}
 
-			hashing::tt_save(board, pv[0], score, ply, LOWER);
+			tt::store(board, pv[0], score, ply, 0, EXACT);
 		}
 	}
 
-	//// engine::stop
-	if (alpha == -score_e::MATE)
-	{
-		pv[0] = 0;
-		return;
-	}
-
 	best_score = alpha;
-	hashing::tt_save(board, pv[0], best_score, ply, EXACT);
 }
 int search::alphabeta(pos &board, int ply, int depth, int beta, int alpha)
 {
 	assert(beta > alpha);
 
-	//// draw
+	// draw
+
 	hashlist[board.moves - 1] = board.key;
-	if (draw::verify(board, hashlist))
+	if (draw::verify(board, hashlist, depth))
 		return score_e::DRAW;
-	
-	//// drop into quiescence search
+
+	// drop into quiescence search
+
 	if (ply == 0 || depth >= lim::depth)
 		return qsearch(board, alpha, beta);
 
-	//// time check
+	// time check
+
 	if (ply > 1 && time_is_up())
 	{
 		engine::stop = true;
 		return 0;
 	}
 
-	//// mate distance pruning
+	// mate distance pruning
+
 	if (score_e::MATE - depth < beta)
 	{
 		beta = score_e::MATE - depth;
-		if (score_e::MATE - depth <= alpha)
+		if (beta <= alpha)
 			return alpha;
 	}
 
-	//// initialise pruning
-	bool skip_pruning{ is_check(board) || pv_evol[last][depth] || no_pruning[depth] };
+	// transposition table lookup
+
+	struct ttable
+	{
+		int score{ score_e::NDEF };
+		uint16 move{ 0 };
+		uint8 flag{ 0 };
+	} t;
+
+	if (tt::probe(board, t.move, t.score, ply, depth, t.flag))
+	{
+		assert(t.score != score_e::NDEF);
+		assert(t.flag != 0);
+
+		if (t.score >= beta || t.score <= alpha)
+		{
+			if (t.flag == UPPER && t.score >= beta) return t.score;
+			if (t.flag == LOWER && t.score <= alpha) return t.score;
+			if (t.flag == EXACT) return t.score;
+		}
+	}
+	if (t.flag != EXACT || t.score <= alpha || t.score >= beta)
+		t.move = 0;
+
+	// initialise pruning
+
+	bool skip_pruning{ pv_evol[last][depth] || no_pruning[depth] || is_check(board) };
 	int score{ score_e::NDEF };
 
-	//// transposition table lookup
-	uint16 tt_move{ 0 };
-	uint8 tt_flag{ 0 };
-	if (hashing::tt_probe(ply, alpha, beta, board, score, tt_move, tt_flag))
+	if (ply <= 3 && !skip_pruning)
+		score = eval::eval_board(board);
+
+	// beta pruning
+
+	if (ply <= 3
+		&& abs(beta) < score_e::MAX
+		&& !skip_pruning
+		&& score - ply * 50 >= beta)
 	{
 		assert(score != score_e::NDEF);
-		assert(tt_move != 0);
-		assert(tt_flag != 0);
-
-		if (score > score_e::MAX) score -= depth;
-		if (score < -score_e::MAX) score += depth;
-
-		if (score >= beta || score <= alpha)
-		{
-			if (tt_flag == UPPER && score >= beta) return score;
-			if (tt_flag == LOWER && score <= alpha) return score;
-			if (tt_flag == EXACT) return score;
-		}
+		return score;
 	}
-	if (tt_flag != EXACT || score <= alpha || score >= beta)
-		tt_move = 0;
 
-	if (!skip_pruning)
+	// razoring
+
+	if (ply <= 3
+		&& !skip_pruning
+		&& score + ply * 50 + 100 <= alpha)
 	{
-		//// static evaluation
-		if (ply <= 3)
-			score = eval::eval_board(board);
+		auto raz_alpha{ alpha - ply * 50 - 100 };
+		auto new_s{ qsearch(board, raz_alpha, raz_alpha + 1) };
 
-		//// beta pruning
-		if (ply <= 3
-			&& abs(beta) < score_e::MAX
-			&& score - ply * 50 >= beta)
+		if (new_s <= raz_alpha)
+			return new_s;
+	}
+
+	// null move pruning
+
+	if (ply >= 3
+		&& !skip_pruning
+		&& beta != score_e::DRAW ///
+		&& !board.lone_king()
+		&& eval::eval_board(board) >= beta)
+	{
+		int R{ 3 };
+		uint64 ep_copy{ 0 };
+
+		board.null_move(ep_copy);
+
+		no_pruning[depth + 1] = true;
+		score = -alphabeta(board, ply - R, depth + 1, 1 - beta, -beta);
+		no_pruning[depth + 1] = false;
+
+		if (engine::stop) return 0;
+
+		board.undo_null_move(ep_copy);
+
+		if (score >= beta)
 		{
-			assert(score != score_e::NDEF);
+			tt::store(board, 0, score, ply, depth, UPPER);
 			return score;
 		}
-
-		//// razoring
-		if (ply <= 3
-			&& score + ply * 50 + 100 <= alpha)
-		{
-			int raz_alpha{ alpha - ply * 50 - 100 };
-			int new_s{ qsearch(board, raz_alpha, raz_alpha + 1) };
-
-			if (new_s <= raz_alpha)
-				return new_s;
-		}
-
-		//// null move pruning
-		if (ply >= 2
-			&& !board.lone_king()
-			&& ((score != score_e::NDEF && score >= beta)
-				|| (score == score_e::NDEF && eval::eval_board(board) >= beta)))
-		{
-			int R{ ply > 6 ? 3 : 2 };
-			uint64 ep_copy{ 0 };
-
-			board.null_move(ep_copy);
-
-			no_pruning[depth + 1] = true;
-			score = -alphabeta(board, ply - R, depth + 1, 1 - beta, -beta);
-			no_pruning[depth + 1] = false;
-
-			if (engine::stop) return 0;
-
-			board.undo_null_move(ep_copy);
-
-			if (score >= beta) return score;
-		}
 	}
-	
-	//// generating all moves
-	movegen gen(board, ALL);
 
-	//// checkmate & stalemate
+	movegen gen(board, ALL);
+	uint16 *best_move{ nullptr };
+
+	// checkmate & stalemate detection
+
 	if (!gen.move_cnt)
 	{
 		if (is_check(board))
@@ -423,55 +490,38 @@ int search::alphabeta(pos &board, int ply, int depth, int beta, int alpha)
 		return alpha;
 	}
 
-	//// principal variation from last iteration
+	// principal variation from last iteration
+
 	if (pv_evol[last][depth])
 	{
 		uint16 *pos_list{ gen.find(pv_evol[last][depth]) };
 
-		if (pos_list != gen.movelist + gen.move_cnt)
-			std::swap(gen.movelist[0], *pos_list);
-		else
-			for (int i{ depth + 1 }; pv_evol[last][i] != 0; pv_evol[last][i++] = 0);
+		if(pos_list != gen.list + gen.move_cnt)
+			best_move = pos_list;
 
 		pv_evol[last][depth] = 0;
 	}
 
-	//// move from the transposition table
-	else if (tt_move != 0)
-	{
-		uint16 *pos_list{ gen.find(tt_move) };
+	// move from the transposition table
 
-		if (pos_list != gen.movelist + gen.move_cnt)
-			std::swap(gen.movelist[0], *pos_list);
+	else if (t.move != 0)
+	{
+		uint16 *pos_list{ gen.find(t.move) };
+
+		if(pos_list != gen.list + gen.move_cnt)
+			best_move = pos_list;
 	}
 
-	//// internal iterative deepening
-	/*else if (ply >= 3 && !no_pruning[depth])
-	{
-		no_pruning[depth] = true;
-		score = alphabeta(board, ply - 2, depth, beta, alpha);
-		no_pruning[depth] = false;
-
-		if (engine::stop) return 0;
-
-		if (score > alpha)
-		{
-			uint16 *pos_list{ gen.find(pv_evol[depth - 1][0]) };
-
-			if (pos_list != gen.movelist + gen.move_cnt)
-				std::swap(gen.movelist[0], *pos_list);
-		}
-	}*/
-
-	//// going through the movelist
+	sort list(board, gen, best_move, history, killer, depth);
 	pos save(board);
-	for (int nr{ 0 }; nr < gen.move_cnt; ++nr)
+	auto old_alpha{ alpha };
+
+	for (auto move{ list.next(gen) }; move; move = list.next(gen))
 	{
-		assert(gen.movelist[nr] != 0);
+		board.new_move(move);
 
-		board.new_move(gen.movelist[nr]);
+		// check extension
 
-		//// check extension
 		int ext{ 1 };
 		if (is_check(board) && ply <= 4)
 			ext = 0;
@@ -483,26 +533,27 @@ int search::alphabeta(pos &board, int ply, int depth, int beta, int alpha)
 
 		if (score >= beta)
 		{
-			hashing::tt_save(board, gen.movelist[nr], score, ply, UPPER);
+			tt::store(board, 0, score, ply, depth, UPPER);
+			update_heuristics(board, move, ply, depth);
 			return score;
 		}
 		if (score > alpha)
 		{
 			alpha = score;
-			hashing::tt_save(board, gen.movelist[nr], score, ply, EXACT);
+			tt::store(board, move, score, ply, depth, EXACT);
 			
-			//// updating principal variation
-			pv_evol[depth - 1][0] = gen.movelist[nr];
+			// updating principal variation
+
+			pv_evol[depth - 1][0] = move;
 			for (int i{ 0 }; pv_evol[depth][i] != 0; ++i)
 			{
 				pv_evol[depth - 1][i + 1] = pv_evol[depth][i];
 			}
 		}
-		else
-		{
-			hashing::tt_save(board, gen.movelist[nr], score, ply, LOWER);
-		}
 	}
+
+	if(alpha == old_alpha)
+		tt::store(board, 0, alpha, ply, depth, LOWER);
 
 	return alpha;
 }
@@ -513,24 +564,27 @@ int search::qsearch(pos &board, int alpha, int beta)
 
 	movegen gen(board, CAPTURES);
 
-	//// standing pat
-	int score{ eval::eval_board(board) };
-	if (!gen.move_cnt) return score;
+	// standing pat
 
+	auto score{ eval::eval_board(board) }; 
+
+	if (!gen.move_cnt) return score;
 	if (score >= beta) return score;
 	if (score > alpha) alpha = score;
 
+	sort list(board, gen);
 	pos save(board);
-	for (int nr{ 0 }; nr < gen.move_cnt; ++nr)
+
+	for (auto move{ list.next(gen) }; move; move = list.next(gen))
 	{
-		//// delta pruning
-		int piece{ board.piece_sq[to_sq2(gen.movelist[nr])] };
+		// delta pruning
+
 		if (!board.lone_king()
-			&& !is_promo(gen.movelist[nr])
-			&& score + value[piece] + 200 < alpha)
+			&& !is_promo(move)
+			&& score + eval::value[MG][board.piece_sq[to_sq2(move)]] + 100 < alpha)
 			continue;
 
-		board.new_move(gen.movelist[nr]);
+		board.new_move(move);
 
 		score = -qsearch(board, -beta, -alpha);
 		board = save;
