@@ -1,5 +1,5 @@
 /*
-  Monolith 0.1  Copyright (C) 2017 Jonas Mayr
+  Monolith 0.2  Copyright (C) 2017 Jonas Mayr
 
   This file is part of Monolith.
 
@@ -30,7 +30,7 @@ namespace
 	string fullpath;
 }
 
-void files::set_path(string &path)
+void files::set_path(const string &path)
 {
 	fullpath = path;
 }
