@@ -1,5 +1,5 @@
 /*
-  Monolith 0.1  Copyright (C) 2017 Jonas Mayr
+  Monolith 0.2  Copyright (C) 2017 Jonas Mayr
 
   This file is part of Monolith.
 
@@ -22,7 +22,6 @@
 #include "evaluation.h"
 #include "search.h"
 #include "book.h"
-#include "convert.h"
 #include "game.h"
 #include "files.h"
 #include "movegen.h"
@@ -31,28 +30,23 @@
 
 int engine::hash_size{ 128 };
 int engine::depth;
-bool engine::play_with_book;
+bool engine::use_book;
 bool engine::stop;
+
+namespace
+{
+	// transposition table
+
+	tt table(engine::hash_size);
+}
 
 void engine::new_game(pos &board, chronos &chrono)
 {
-	game::reset();
-	board.parse_fen(startpos);
-
-	play_with_book = true;
-	depth = lim::depth;
-
-	chrono.set_movetime(lim::movetime);
-	hashing::tt_clear();
+	parse_fen(board, chrono, startpos);
+	use_book = true;
 }
 void engine::new_move(pos &board, uint64 &sq1_64, uint64 &sq2_64, uint8 flag)
 {
-	int control{ game::moves / 2 + 1 };
-	if (game::moves != control)
-		game::game_str += std::to_string(control) + ". ";
-
-	game::game_str += conv::bit_to_san(board, sq1_64, sq2_64, flag) + " ";
-
 	bb::bitscan(sq1_64);
 	int sq1{ static_cast<int>(bb::lsb()) };
 	bb::bitscan(sq2_64);
@@ -69,11 +63,11 @@ void engine::parse_fen(pos &board, chronos &chrono, string fen)
 {
 	game::reset();
 
-	play_with_book = false;
+	use_book = false;
 	depth = lim::depth;
 
 	chrono.set_movetime(lim::movetime);
-	hashing::tt_clear();
+	table.clear();
 
 	board.parse_fen(fen);
 }
@@ -86,13 +80,11 @@ uint32 engine::bitscan(uint64 board)
 
 void engine::init_movegen()
 {
-	//// to be called only once
-
 	movegen::init();
 
 	magic::init();
-	magic::init_ray(rook);
-	magic::init_ray(bishop);
+	magic::init_ray(ROOK);
+	magic::init_ray(BISHOP);
 	magic::init_king();
 	magic::init_knight();
 }
@@ -111,27 +103,23 @@ void engine::init_rand()
 void engine::init_book()
 {
 	if (book::open())
-		play_with_book = true;
+		use_book = true;
 	else
-		play_with_book = false;
+		use_book = false;
 }
 uint16 engine::get_book_move(pos &board)
 {
 	return book::get_move(board);
 }
 
-void engine::init_hash(int size)
+void engine::new_hash_size(int size)
 {
-	delete_hash();
-	hashing::tt_create(size);
-}
-void engine::delete_hash()
-{
-	hashing::tt_delete();
+	hash_size = table.create(size);
 }
 
 uint16 engine::alphabeta(pos &board, chronos &chrono)
 {
+	stop = false;
 	analysis::reset();
 	return search::id_frame(board, chrono);
 }
