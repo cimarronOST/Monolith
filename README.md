@@ -19,9 +19,10 @@ Features:
 
 
 Useful informations:
-- If your computer does not support POPCNT and LZCNT, use the *_noSSE4 executable files.
+- If your computer does not support POPCNT and LZCNT, use the *_noSSE4 binaries.
 - I haven't compiled any 32-bit-executables.
-- The standard PolyGlot openingbook of Monolith is called 'book.bin' and has to be contained in the same directory as the executable file in order to be used.
+- The standard PolyGlot openingbook of Monolith is called 'book.bin' and has to be contained in the same directory as the binary file in order to be used.
+- Only the Windows-binaries support PolyGlot books.
 
 
 Contact:
