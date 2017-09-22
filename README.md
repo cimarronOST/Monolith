@@ -3,9 +3,12 @@
 This program is distributed under the GNU General Public License.
 Please read LICENSE for more information.
 
-Monolith is a open source UCI-compliant chess engine written in C++14 by a not too busy medicin student who prefers to invest his extra time into computer chess rather than to seek better grades. It's simply much more fun.
+Monolith is a open source UCI-compliant chess engine written in C++14 by a not too busy medicin student who prefers to invest his extra time into computer chess rather than to seek better grades.
+It's simply much more fun.
+
 Monolith is not a standalone chess programm, but needs a GUI in order to be used properly, for example Arena (www.playwitharena.com).
-Huge credits go to the Chess Programming Wiki (https://chessprogramming.wikispaces.com) and to the equally fantastic www.talkchess.com. Without them this little project would have never been possible.
+Huge credits go to the Chess Programming Wiki (https://chessprogramming.wikispaces.com) and to the equally fantastic www.talkchess.com.
+Without them this little project would have never been possible.
 
 
 ## Main features
@@ -19,7 +22,7 @@ Huge credits go to the Chess Programming Wiki (https://chessprogramming.wikispac
 
 ## Strenght
 Monolith 0.2 achieved 2232 Elo on the CCRL 40/4 (www.computerchess.org.uk/ccrl/404).
-I expect Monolith 0.3 to be roughly 80 Elo stronger.
+I expect Monolith 0.3 to be roughly 100 Elo stronger.
 
 
 ## Main changes to the previous version
