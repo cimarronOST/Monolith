@@ -29,7 +29,7 @@ I expect Monolith 0.3 to be roughly 100 Elo stronger.
 - added Principal Variation Search
 - added reverse futility pruning
 - added SEE for move-ordering
-- added SEE pruning in quiesence search
+- added SEE pruning in quiescence search
 - new and improved search extensions
 - higher rook-on-open-file bonus
 - a lot of small evaluation tweaks
@@ -39,7 +39,7 @@ I expect Monolith 0.3 to be roughly 100 Elo stronger.
 - added new important UCI options
 - fixed the reported bug that prevented the use of external opening books
 - added support to use internal books under Linux
-- a lot of other bugfixes and improvements
+- a lot of other bug fixes and improvements
 
 
 ## Which executable to use
