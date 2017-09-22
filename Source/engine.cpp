@@ -1,5 +1,5 @@
 /*
-  Monolith 0.2  Copyright (C) 2017 Jonas Mayr
+  Monolith 0.3  Copyright (C) 2017 Jonas Mayr
 
   This file is part of Monolith.
 
@@ -22,16 +22,39 @@
 #include "evaluation.h"
 #include "search.h"
 #include "book.h"
-#include "game.h"
-#include "files.h"
+#include "logfile.h"
+#include "magic.h"
 #include "movegen.h"
-#include "bitboard.h"
 #include "engine.h"
 
+// internal values
+
+const std::string engine::startpos
+{
+	"rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1"
+};
+
+bool engine::stop{ true };
+int engine::move_cnt;
+
+uint32 engine::movelist[lim::period];
+uint64 engine::hashlist[lim::period];
+
+// independent values
+
 int engine::hash_size{ 128 };
+int engine::contempt{ 0 };
+bool engine::best_book_line{ false };
+
+// values dependent on UCI input
+
+bool engine::infinite{ false };
 int engine::depth;
+uint64 engine::nodes;
+
+// values dependent on file placement
+
 bool engine::use_book;
-bool engine::stop;
 
 namespace
 {
@@ -40,76 +63,84 @@ namespace
 	tt table(engine::hash_size);
 }
 
-void engine::new_game(pos &board, chronos &chrono)
+void engine::new_game(pos &board)
 {
-	parse_fen(board, chrono, startpos);
 	use_book = true;
-}
-void engine::new_move(pos &board, uint64 &sq1_64, uint64 &sq2_64, uint8 flag)
-{
-	bb::bitscan(sq1_64);
-	int sq1{ static_cast<int>(bb::lsb()) };
-	bb::bitscan(sq2_64);
-	int sq2{ static_cast<int>(bb::lsb()) };
+	table.reset();
 
-	uint16 move{ encode(sq1, sq2, flag) };
+	parse_fen(board, startpos);
+}
+
+void engine::new_move(pos &board, uint32 move)
+{
 	board.new_move(move);
-
-	assert(sq2_64 & board.side[board.turn ^ 1]);
-
-	game::save_move(board, move);
+	save_move(board, move);
 }
-void engine::parse_fen(pos &board, chronos &chrono, string fen)
+
+void engine::parse_fen(pos &board, std::string fen)
 {
-	game::reset();
-
-	use_book = false;
-	depth = lim::depth;
-
-	chrono.set_movetime(lim::movetime);
-	table.clear();
-
+	reset_game();
 	board.parse_fen(fen);
 }
 
-uint32 engine::bitscan(uint64 board)
+void engine::reset_game()
 {
-	bb::bitscan(board);
-	return bb::lsb();
+	move_cnt = 0;
+
+	for (auto &m : movelist) m = NO_MOVE;
+	for (auto &h : hashlist) h = 0ULL;
+}
+
+void engine::save_move(const pos &board, uint32 move)
+{
+	movelist[move_cnt] = move;
+	hashlist[move_cnt] = board.key;
+	move_cnt += 1;
+}
+
+void engine::init_magic()
+{
+	magic::init();
 }
 
 void engine::init_movegen()
 {
-	movegen::init();
-
-	magic::init();
-	magic::init_ray(ROOK);
-	magic::init_ray(BISHOP);
-	magic::init_king();
-	magic::init_knight();
+	movegen::init_ray(ROOK);
+	movegen::init_ray(BISHOP);
+	movegen::init_king();
+	movegen::init_knight();
 }
 
-void engine::init_path(string path)
+void engine::init_path(char *argv[])
 {
-	files::set_path(path);
-	if(!files::open())
-		std::cerr << "warning: not able to access path \'" + path + "\'" << endl;
-}
-void engine::init_rand()
-{
-	srand(static_cast<unsigned int>(time(0)));
+	log_file::set_path(argv);
+	log_file::open();
 }
 
 void engine::init_book()
 {
+	// assuming path is already established
+
 	if (book::open())
 		use_book = true;
 	else
 		use_book = false;
 }
-uint16 engine::get_book_move(pos &board)
+
+uint32 engine::get_book_move(pos &board)
 {
-	return book::get_move(board);
+	return book::get_move(board, best_book_line);
+}
+
+std::string engine::get_book_name()
+{
+	return book::book_name;
+}
+
+void engine::new_book(std::string new_name)
+{
+	book::book_name = new_name;
+	init_book();
 }
 
 void engine::new_hash_size(int size)
@@ -117,14 +148,34 @@ void engine::new_hash_size(int size)
 	hash_size = table.create(size);
 }
 
-uint16 engine::alphabeta(pos &board, chronos &chrono)
+void engine::clear_hash()
 {
-	stop = false;
+	table.reset();
+}
+
+uint32 engine::start_searching(pos &board, chronos &chrono, uint32 &ponder)
+{
 	analysis::reset();
-	return search::id_frame(board, chrono);
+	return search::id_frame(board, chrono, ponder);
+}
+
+void engine::stop_ponder()
+{
+	infinite = false;
+	search::stop_ponder();
 }
 
 void engine::init_eval()
 {
 	eval::init();
+}
+
+void engine::eval(pos &board)
+{
+	// doing a static evaluation of the current position
+	// for debugging purpose
+
+	log::cout << "total evaluation: " << eval::static_eval(board)
+		<< " cp (" << (board.turn == WHITE ? "white's" : "black's") << " point of view)"
+		<< std::endl;
 }
