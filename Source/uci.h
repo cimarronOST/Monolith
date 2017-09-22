@@ -1,5 +1,5 @@
 /*
-  Monolith 0.2  Copyright (C) 2017 Jonas Mayr
+  Monolith 0.3  Copyright (C) 2017 Jonas Mayr
 
   This file is part of Monolith.
 
@@ -20,11 +20,23 @@
 
 #pragma once
 
+#include <sstream>
+#include <thread>
+
 #include "chronos.h"
+#include "position.h"
 #include "main.h"
+
+// universal chess interface communication protocol
 
 namespace uci
 {
 	void loop();
+
 	void search(pos *board, chronos *chrono);
+	void go(std::istringstream &stream, std::thread &searching, pos &board, chronos &chrono);
+
+	void options();
+	void setoption(std::istringstream &stream);
+	void position(std::istringstream &stream, pos &board);
 }
