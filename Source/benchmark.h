@@ -1,5 +1,5 @@
 /*
-  Monolith 0.2  Copyright (C) 2017 Jonas Mayr
+  Monolith 0.3  Copyright (C) 2017 Jonas Mayr
 
   This file is part of Monolith.
 
@@ -22,13 +22,10 @@
 
 #include "main.h"
 
-#ifdef DEBUG
+// set of positions to test performance and correctness
 
-#include "position.h"
-
-namespace benchmark
+namespace bench
 {
-	void analysis(const string type);
+	void perft(std::string mode);
+	void search();
 }
-
-#endif
