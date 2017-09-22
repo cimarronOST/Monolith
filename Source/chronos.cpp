@@ -1,5 +1,5 @@
 /*
-  Monolith 0.2  Copyright (C) 2017 Jonas Mayr
+  Monolith 0.3  Copyright (C) 2017 Jonas Mayr
 
   This file is part of Monolith.
 
@@ -20,27 +20,30 @@
 
 #include "chronos.h"
 
-void chronos::set_movetime(int new_time)
+uint64 chronos::get_movetime(int turn)
 {
-	movetime = new_time - new_time / 20;
-	only_movetime = true;
-}
-int chronos::get_movetime(int turn)
-{
-	if (!only_movetime)
-	{
-		movetime = time[turn] / moves_to_go + incr[turn];
-		movetime -= movetime / 20 + incr[turn] / moves_to_go;
-	}
+	if (movetime) return movetime;
+
+	// applying a safety margin on the movetime
+
+	movetime = time[turn] / moves_to_go + incr[turn];
+	movetime -= movetime / 20 + incr[turn] / moves_to_go;
+
 	return movetime;
 }
 
-void timer::start()
+void chronos::set_movetime(uint64 new_time)
 {
-	start_point = std::chrono::system_clock::now();
+	movetime = new_time - new_time / 30;
 }
-int timer::elapsed() const
+
+void chronometer::start()
 {
-	return std::chrono::duration_cast<std::chrono::duration<int, std::ratio<1, 1000>>>
-		(std::chrono::system_clock::now() - start_point).count();
+	start_time = std::chrono::system_clock::now();
+}
+
+uint64 chronometer::elapsed() const
+{
+	return std::chrono::duration_cast<std::chrono::duration<uint64, std::ratio<1, 1000>>>
+		(std::chrono::system_clock::now() - start_time).count();
 }
