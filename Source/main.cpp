@@ -1,5 +1,5 @@
 /*
-  Monolith 0.2  Copyright (C) 2017 Jonas Mayr
+  Monolith 0.3  Copyright (C) 2017 Jonas Mayr
 
   This file is part of Monolith.
 
@@ -24,19 +24,18 @@
 
 namespace
 {
-	static_assert(sizeof(uint8) == 1, "char");
+	static_assert(sizeof(uint8)  == 1, "char");
 	static_assert(sizeof(uint16) == 2, "short");
 	static_assert(sizeof(uint32) == 4, "int");
 	static_assert(sizeof(uint64) == 8, "long long");
 }
 
-int main(int argc, char** argv)
+int main(int argc, char* argv[])
 {
-	std::cout << "Monolith " << version << endl;
+	std::cout << "Monolith " << version << std::endl;
 
-	engine::init_path(*argv);
-	engine::init_book();
-	engine::init_rand();
+	engine::init_path(argv);
+	engine::init_magic();
 	engine::init_movegen();
 	engine::init_eval();
 
