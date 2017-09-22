@@ -1,5 +1,5 @@
 /*
-  Monolith 0.2  Copyright (C) 2017 Jonas Mayr
+  Monolith 0.3  Copyright (C) 2017 Jonas Mayr
 
   This file is part of Monolith.
 
@@ -18,7 +18,11 @@
 */
 
 
-#include "files.h"
+#if defined(__linux__)
+#include <unistd.h>
+#endif
+
+#include "logfile.h"
 
 std::ofstream sync_log::fout;
 syncbuf sync_log::sbuf(sync_log::fout.rdbuf(), std::cout.rdbuf());
@@ -27,21 +31,39 @@ std::ostream sync_log::cout(&sbuf);
 
 namespace
 {
-	string fullpath;
+	std::string fullpath;
+	const std::string log_name{ "monolith logfile.txt" };
 }
 
-void files::set_path(const string &path)
+void log_file::set_path(char *argv[])
 {
+	// retrieving the full path of the directory of the binary file
+
+#if defined(_WIN32)
+
+	char path[255] = "";
+	_fullpath(path, argv[0], sizeof(path));
+
 	fullpath = path;
+	fullpath.erase(fullpath.find_last_of("\\") + 1, fullpath.size());
+
+#elif defined(__linux__)
+
+	fullpath = get_current_dir_name();
+	fullpath += "/";
+
+#endif
 }
-string files::get_path()
+
+std::string log_file::get_path()
 {
 	return fullpath;
 }
-bool files::open()
+
+bool log_file::open()
 {
 
-#ifndef LOG_ON
+#ifndef LOG
 
 	if (sync_log::fout.is_open())
 		sync_log::fout.close();
@@ -55,9 +77,9 @@ bool files::open()
 	}
 	else
 	{
-		string path{ get_path() };
-		path.erase(path.find_last_of("\\") + 1, path.size());
-		path += "searchlog.txt";
+		// trying to open the logfile
+
+		std::string path{ get_path() + log_name };
 
 		sync_log::fout.clear();
 		sync_log::fout.open(path);
