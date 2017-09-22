@@ -1,5 +1,5 @@
 /*
-  Monolith 0.2  Copyright (C) 2017 Jonas Mayr
+  Monolith 0.3  Copyright (C) 2017 Jonas Mayr
 
   This file is part of Monolith.
 
@@ -18,33 +18,25 @@
 */
 
 
-#ifdef _MSC_VER
+#if defined(_MSC_VER)
 #include <intrin.h>
 #include <nmmintrin.h>
 #endif
 
 #include "bitboard.h"
 
-namespace
-{
-	unsigned long LSB, *ptr{ &LSB };
-}
-
-unsigned long bb::lsb()
-{
-	return LSB;
-}
-
-#if defined(SSE4) && defined(_MSC_VER)
+#if defined(POPCNT) && defined(_MSC_VER)
 	int bb::popcnt(uint64 board)
 	{
 		return static_cast<int>(_mm_popcnt_u64(board));
 	}
-#elif defined(SSE4) && defined(__GNUC__)
+
+#elif defined(POPCNT) && defined(__GNUC__)
 	int bb::popcnt(uint64 board)
 	{
 		return __builtin_popcountll(board);
 	}
+
 #else
 	int bb::popcnt(uint64 board)
 	{
@@ -56,18 +48,26 @@ unsigned long bb::lsb()
 	}
 #endif
 
-#if defined(SSE4) && defined(_MSC_VER)
-	void bb::bitscan(uint64 board)
+#if defined(POPCNT) && defined(_MSC_VER)
+	namespace
 	{
-		assert(board != 0);
+		unsigned long LSB, *ptr{ &LSB };
+	}
+
+	unsigned long bb::bitscan(uint64 board)
+	{
+		assert(board != 0ULL);
 		_BitScanForward64(ptr, board);
+		return LSB;
 	}
-#elif defined(SSE4) && defined(__GNUC__)
-	void bb::bitscan(uint64 board)
+
+#elif defined(POPCNT) && defined(__GNUC__)
+	unsigned long bb::bitscan(uint64 board)
 	{
-		assert(board != 0);
-		LSB = __builtin_ctzll(board);
+		assert(board != 0ULL);
+		return __builtin_ctzll(board);
 	}
+
 #else
 	namespace
 	{
@@ -83,9 +83,10 @@ unsigned long bb::lsb()
 			47, 23, 31, 43, 22, 30, 21, 20,
 		};
 	}
-	void bb::bitscan(uint64 board)
+
+	unsigned long bb::bitscan(uint64 board)
 	{
-		assert(board != 0);
-		LSB = index[((board & (-1 * board)) * 0x02450fcbd59dc6d3) >> 58];
+		assert(board != 0ULL);
+		return index[((board & (-1 * board)) * 0x02450fcbd59dc6d3) >> 58];
 	}
 #endif
