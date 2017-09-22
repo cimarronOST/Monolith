@@ -1,5 +1,5 @@
 /*
-  Monolith 0.2  Copyright (C) 2017 Jonas Mayr
+  Monolith 0.3  Copyright (C) 2017 Jonas Mayr
 
   This file is part of Monolith.
 
@@ -27,6 +27,8 @@
 
 namespace
 {
+	// overriding streambuffer
+
 	struct syncbuf : std::streambuf
 	{
 		std::streambuf *to_file, *to_cons;
@@ -40,12 +42,15 @@ namespace
 			else
 				return traits_type::not_eof(c);
 		}
+
 		int sync() override
 		{
 			return to_file->pubsync(), to_cons->pubsync();
 		}
 	};
 }
+
+// redirecting the standard stream output to write in a logging files
 
 class sync_log
 {
@@ -56,10 +61,12 @@ public:
 	static std::ostream cout;
 };
 
-namespace files
+// using the logging file
+
+namespace log_file
 {
-	void set_path(const string &path);
-	string get_path();
+	void set_path(char *argv[]);
+	std::string get_path();
 
 	bool open();
 };
