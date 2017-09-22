@@ -1,5 +1,5 @@
 /*
-  Monolith 0.2  Copyright (C) 2017 Jonas Mayr
+  Monolith 0.3  Copyright (C) 2017 Jonas Mayr
 
   This file is part of Monolith.
 
@@ -22,10 +22,11 @@
 
 #include "main.h"
 
+// bitboard operations
+
 namespace bb
 {
 	int popcnt(uint64 board);
-	void bitscan(uint64 board);
 
-	unsigned long lsb();
+	unsigned long bitscan(uint64 board);
 };

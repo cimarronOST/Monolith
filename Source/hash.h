@@ -1,5 +1,5 @@
 /*
-  Monolith 0.2  Copyright (C) 2017 Jonas Mayr
+  Monolith 0.3  Copyright (C) 2017 Jonas Mayr
 
   This file is part of Monolith.
 
@@ -23,11 +23,14 @@
 #include "position.h"
 #include "main.h"
 
-namespace hashing
+// Zobrist hashing
+// used for PolyGlot-book-reading and the transposition table
+
+namespace zobrist
 {
 	// random numbers from PolyGlot by Fabien Letouzey
 
-	const uint64 random64[]
+	const uint64 rand_key[]
 	{
 		0x9D39247E33776D41ULL, 0x2AF7398005AAA5C7ULL, 0x44DB015024623547ULL, 0x9C15F73E62A76AE2ULL,
 		0x75834465489C0C89ULL, 0x3290AC3A203001BFULL, 0x0FBBAD1F61042279ULL, 0xE83A908FF2FB60CAULL,
@@ -229,35 +232,36 @@ namespace hashing
 
 	// hash constants
 
-	const struct offset_s
+	const struct key_offset
 	{
-		const int castl{ 768 };
-		const int ep{ 772 };
-		const int turn{ 780 };
-	}
-	offset;
+		int castling{ 768 };
+		int ep{ 772 };
+		int turn{ 780 };
+	} offset;
 
 	const uint64 is_turn[]
 	{
-		random64[offset.turn],
+		rand_key[offset.turn],
 		0ULL
 	};
 
 	const uint64 ep_flank[][8]
 	{
 		{
-			0x0002000000, 0x0005000000, 0x000a000000, 0x0014000000,
-			0x0028000000, 0x0050000000, 0x00a0000000, 0x0040000000
+			0x0002000000, 0x0005000000,
+			0x000a000000, 0x0014000000,
+			0x0028000000, 0x0050000000,
+			0x00a0000000, 0x0040000000
 		},
 		{
-			0x0200000000, 0x0500000000, 0x0a00000000, 0x1400000000,
-			0x2800000000, 0x5000000000, 0xa000000000, 0x4000000000
+			0x0200000000, 0x0500000000,
+			0x0a00000000, 0x1400000000,
+			0x2800000000, 0x5000000000,
+			0xa000000000, 0x4000000000
 		}
 	};
 
-	const int piece_12[]{ 1, 7, 3, 5, 9, 11 };
-
-	// hash function
+	// turning a position into a hash key
 
 	uint64 to_key(const pos &board);
 };
@@ -271,33 +275,42 @@ private:
 	struct trans
 	{
 		uint64 key;
-		uint16 move;
 		int16 score;
+		uint16 move;
+		uint8 info;
+		uint8 age;
 		uint8 ply;
 		uint8 flag;
 	};
 
 	static trans* table;
-	void erase();
+
+	static_assert(sizeof(trans) == 16, "tt entry size of 16 bytes");
 
 public:
 
-	tt() { }
+	static uint64 tt_size;
+
 	tt(uint64 size)
 	{
 		erase();
 		create(size);
 	}
-	~tt()
-	{
-		erase();
-	}
 
-	static uint64 tt_size;
+	~tt() { erase(); }
 
-	int create(uint64 size);
+private:
+
+	void erase();
 	void clear();
 
-	static void store(const pos &board, uint16 move, int score, int ply, int depth, uint8 flag);
-	static bool probe(const pos &board, uint16 &move, int &score, int ply, int depth, uint8 &flag);
+public:
+
+	int create(uint64 size);
+	void reset();
+
+	static int hashfull();
+
+	static void store(const pos &board, uint32 move, int score, int ply, int depth, uint8 flag);
+	static bool probe(const pos &board, uint32 &move, int &score, int ply, int depth, uint8 &flag);
 };

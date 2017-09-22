@@ -1,5 +1,5 @@
 /*
-  Monolith 0.2  Copyright (C) 2017 Jonas Mayr
+  Monolith 0.3  Copyright (C) 2017 Jonas Mayr
 
   This file is part of Monolith.
 
@@ -18,14 +18,9 @@
 */
 
 
-#include <thread>
-#include <sstream>
-
-#include "files.h"
+#include "bench.h"
+#include "logfile.h"
 #include "engine.h"
-#include "console.h"
-#include "convert.h"
-#include "position.h"
 #include "uci.h"
 
 namespace
@@ -38,33 +33,290 @@ namespace
 			searching.join();
 		}
 	}
+
+	bool ignore(std::thread &searching)
+	{
+		if (engine::stop)
+		{
+			if(searching.joinable())
+				searching.join();
+			return false;
+		}
+		else
+			return true;
+	}
+
+	void infinite(chronos &chrono)
+	{
+		engine::depth = lim::depth;
+		engine::nodes = lim::nodes;
+		chrono.movetime = lim::movetime;
+		chrono.moves_to_go = 50;
+	}
+
+	bool to_bool(std::string value)
+	{
+		return value == "true" ? true : false;
+	}
+
+	std::string to_bool_str(bool value)
+	{
+		return value == true ? "true" : "false";
+	}
+
+	uint32 to_move(const pos &board, std::string input)
+	{
+		// encoding the coordinate-movestring
+
+		char promo{ input.back() };
+		if (input.size() == 5) input.pop_back();
+
+		assert(input.size() == 4);
+
+		auto sq1{ to_idx(input.substr(0, 2)) };
+		auto sq2{ to_idx(input.substr(2, 2)) };
+
+		uint8 flag{ NONE };
+		auto piece{ board.piece_sq[sq1] };
+		auto victim{ board.piece_sq[sq2] };
+
+		if (piece == PAWNS)
+		{
+			// enpassant flag
+
+			if (victim == NONE && abs(sq1 - sq2) % 8 != 0)
+			{
+				flag = ENPASSANT;
+				victim = PAWNS;
+			}
+
+			// doublepush flag
+
+			if (abs(sq1 - sq2) == 16)
+				flag = DOUBLEPUSH;
+
+			// promotion flags
+
+			if      (promo == 'q') flag = PROMO_QUEEN;
+			else if (promo == 'r') flag = PROMO_ROOK;
+			else if (promo == 'b') flag = PROMO_BISHOP;
+			else if (promo == 'n') flag = PROMO_KNIGHT;
+		}
+
+		// castling flags
+
+		else if (piece == KINGS)
+		{
+			if      (sq1 == E1 && sq2 == G1) flag = CASTLING::WHITE_SHORT;
+			else if (sq1 == E8 && sq2 == G8) flag = CASTLING::BLACK_SHORT;
+			else if (sq1 == E1 && sq2 == C1) flag = CASTLING::WHITE_LONG;
+			else if (sq1 == E8 && sq2 == C8) flag = CASTLING::BLACK_LONG;
+		}
+		else
+			assert(piece > PAWNS && piece < KINGS);
+
+		return encode(sq1, sq2, flag, piece, victim, board.turn);
+	}
 }
 
 void uci::search(pos *board, chronos *chrono)
 {
-	auto best_move{ engine::alphabeta(*board, *chrono) };
+	// retrieveing a book move, or (if there is none) starting the search
 
-	assert(best_move != 0);
+	engine::stop = false;
 
-	uint64 sq1{ 1ULL << to_sq1(best_move) };
-	uint64 sq2{ 1ULL << to_sq2(best_move) };
-	uint8 flag{ to_flag(best_move) };
+	uint32 ponder{ 0 };
+	uint32 best_move
+	{
+		engine::use_book && engine::get_book_move(*board)
+		? engine::get_book_move(*board)
+		: engine::start_searching(*board, *chrono, ponder)
+	};
 
-	engine::new_move(*board, sq1, sq2, flag);
+	assert(best_move != NO_MOVE);
+	engine::stop = true;
 
-	log::cout << "bestmove "
-		<< conv::to_str(sq1)
-		<< conv::to_str(sq2)
-		<< conv::to_promo(flag)
-		<< endl;
+	log::cout << "bestmove " << algebraic(best_move);
+
+	if (ponder) log::cout << " ponder " << algebraic(ponder);
+	log::cout << std::endl;
+}
+
+void uci::go(std::istringstream &stream, std::thread &searching, pos &board, chronos &chrono)
+{
+	// applying specifications before starting the search
+
+	std::string token;
+
+	infinite(chrono);
+
+	while (stream >> token)
+	{
+		if (token == "movestogo")
+		{
+			stream >> chrono.moves_to_go;
+		}
+		else if (token == "wtime")
+		{
+			stream >> chrono.time[WHITE];
+			chrono.movetime = 0;
+		}
+		else if (token == "btime")
+		{
+			stream >> chrono.time[BLACK];
+			chrono.movetime = 0;
+		}
+		else if (token == "winc")
+		{
+			stream >> chrono.incr[WHITE];
+		}
+		else if (token == "binc")
+		{
+			stream >> chrono.incr[BLACK];
+		}
+		else if (token == "ponder")
+		{
+			engine::infinite = true;
+		}
+
+		// special cases
+
+		else if (token == "depth")
+		{
+			stream >> engine::depth;
+			if (engine::depth > lim::depth)
+				engine::depth = lim::depth;
+		}
+		else if (token == "nodes")
+		{
+			stream >> engine::nodes;
+		}
+		else if (token == "movetime")
+		{
+			stream >> token;
+			chrono.set_movetime(stoi(token));
+		}
+		else if (token == "infinite")
+		{
+			engine::infinite = true;
+		}
+	}
+
+	searching = std::thread{ search, &board, &chrono };
+}
+
+void uci::setoption(std::istringstream &stream)
+{
+	// parsing the setoption command
+
+	std::string token, name, value;
+	stream >> name, stream >> name, stream >> token;
+
+	while (token != "value")
+	{
+		name += " " + token;
+		if (!(stream >> token)) break;
+	}
+	stream >> value;
+
+	// setting the new option
+	
+	if (name == "Hash")
+	{
+		int new_hash{ stoi(value) };
+		engine::new_hash_size(new_hash <= lim::hash ? new_hash : lim::hash);
+	}
+	else if (name == "Clear Hash")
+	{
+		engine::clear_hash();
+	}
+	else if (name == "Contempt")
+	{
+		int new_cont{ stoi(value) };
+
+		if (new_cont < lim::min_cont) new_cont = lim::min_cont;
+		if (new_cont > lim::max_cont) new_cont = lim::max_cont;
+
+		engine::contempt = new_cont;
+	}
+	else if (name == "Ponder")
+	{
+	}
+	else if (name == "OwnBook")
+	{
+		engine::use_book = to_bool(value);
+	}
+	else if (name == "Best Book Line")
+	{
+		engine::best_book_line = to_bool(value);
+	}
+	else if (name == "Book File")
+	{
+		engine::new_book(value);
+	}
+}
+
+void uci::position(std::istringstream &stream, pos &board)
+{
+	// setting up a new position
+
+	std::string token, fen;
+	stream >> token;
+
+	if (token == "startpos")
+	{
+		fen = engine::startpos;
+		stream >> token;
+	}
+	else if (token == "fen")
+	{
+		while (stream >> token && token != "moves")
+			fen += token + " ";
+	}
+
+	engine::parse_fen(board, fen);
+
+	if (token != "moves") return;
+
+	// executing the move sequence
+
+	while (stream >> token)
+		engine::new_move(board, to_move(board, token));
+}
+
+void uci::options()
+{
+	// responding the "uci" command
+
+	std::cout
+		<< "id name Monolith " << version
+		<< "\nid author Jonas Mayr\n"
+
+		<< "\noption name Ponder type check default false"
+		<< "\noption name OwnBook type check default " << to_bool_str(engine::use_book)
+		<< "\noption name Book File type string default " << engine::get_book_name()
+		<< "\noption name Best Book Line type check default " << to_bool_str(engine::best_book_line)
+		<< "\noption name Hash type spin default " << engine::hash_size << " min 1 max " << lim::hash
+		<< "\noption name Clear Hash type button"
+		<< "\noption name Contempt type spin default " << engine::contempt
+		<< " min " << lim::min_cont << " max " << lim::max_cont
+
+		<< "\nuciok" << std::endl;
 }
 
 void uci::loop()
 {
-	string input, token;
+	// initialising variables
+
+	std::string input, token;
 	pos board;
 	chronos chrono;
 	std::thread searching;
+
+	engine::new_game(board);
+	engine::init_book();
+
+	// communication loop
 
 	do
 	{
@@ -73,186 +325,62 @@ void uci::loop()
 		std::istringstream stream(input);
 		stream >> token;
 
-#ifdef DEBUG
-
-		if (input == "console")
-		{
-			console::loop();
-			log::cout << endl;
-			break;
-		}
-
-#endif
-
 		if (input == "uci")
 		{
-			std::cout
-				<< "id name Monolith " << version << "\n"
-				<< "id author Jonas Mayr\n\n"
-
-				<< "option name OwnBook type check default " << (engine::use_book ? "true\n" : "false\n")
-				<< "option name Hash type spin default " << engine::hash_size << " min 1 max " << lim::hash << "\n";
-			std::cout
-				<< "uciok" << endl;
+			options();
 		}
 		else if (input == "stop")
 		{
 			stop_thread_if(searching);
+			engine::infinite = false;
+		}
+		else if (input == "ponderhit")
+		{
+			engine::stop_ponder();
 		}
 		else if (input == "isready")
 		{
-			std::cout << "readyok" << endl;
+			std::cout << "readyok" << std::endl;
 		}
 		else if (input == "ucinewgame")
 		{
-			stop_thread_if(searching);
-
-			engine::new_game(board, chrono);
+			if (ignore(searching))
+				continue;
+			engine::new_game(board);
 		}
 		else if (token == "setoption")
 		{
-			stop_thread_if(searching);
-
-			stream >> token;
-			string name;
-			stream >> name;
-			if (name == "hash" || name == "Hash")
-			{
-				stream >> token;
-				if(stream >> token)
-					engine::new_hash_size(stoi(token));
-			}
-			else if (name == "ownbook" || name == "OwnBook")
-			{
-				stream >> token, stream >> token;
-
-				if (token == "true")
-					engine::use_book = true;
-
-				else if (token == "false")
-					engine::use_book = false;
-			}
+			if (ignore(searching))
+				continue;
+			setoption(stream);
 		}
 		else if (token == "position")
 		{
-			stop_thread_if(searching);
-
-			stream >> token;
-			string fen;
-			if (token == "startpos")
-			{
-				if (stream.peek() == EOF)
-				{
-					engine::new_game(board, chrono);
-					continue;
-				}
-			}
-			else if (token == "fen")
-			{
-				while (stream >> token && token != "moves")
-					fen += token + " ";
-
-				if (token != "moves")
-				{
-					engine::parse_fen(board, chrono, fen);
-					continue;
-				}
-				else if (stream >> token && stream.peek() == EOF)
-				{
-					engine::parse_fen(board, chrono, fen);
-				}
-			}
-
-			while (stream.peek() != EOF)
-				stream >> token;
-
-			char promo{ token.back() };
-			if (promo == 'q' || promo == 'r' || promo == 'n' || promo == 'b')
-				token.pop_back();
-
-			
-			assert(token.size() == 4);
-
-			uint64 sq1{ conv::to_bb(token.substr(0, 2)) };
-			uint64 sq2{ conv::to_bb(token.substr(2, 2)) };
-			uint8 flag{ conv::to_flag(promo, board, sq1, sq2) };
-
-			engine::new_move(board, sq1, sq2, flag);
+			if (ignore(searching))
+				continue;
+			position(stream, board);
 		}
 		else if (token == "go")
 		{
-			while (stream >> token)
-			{
-				if (token == "infinite")
-				{
-					engine::depth = lim::depth;
-					chrono.set_movetime(lim::movetime);
-				}
-				else if (token == "depth")
-				{
-					stream >> token;
-					engine::depth = stoi(token);
-					if (engine::depth > lim::depth)
-						engine::depth = lim::depth;
-				}
-				else if (token == "movetime")
-				{
-					stream >> token;
-					chrono.set_movetime(stoi(token));
-				}
-				else if (token == "wtime")
-				{
-					stream >> token;
-					chrono.time[WHITE] = stoi(token);
-					chrono.only_movetime = false;
-				}
-				else if (token == "btime")
-				{
-					stream >> token;
-					chrono.time[BLACK] = stoi(token);
-					chrono.only_movetime = false;
-				}
-				else if (token == "winc")
-				{
-					stream >> token;
-					chrono.incr[WHITE] = stoi(token);
-					chrono.only_movetime = false;
-				}
-				else if (token == "binc")
-				{
-					stream >> token;
-					chrono.incr[BLACK] = stoi(token);
-					chrono.only_movetime = false;
-				}
-				else if (token == "movestogo")
-				{
-					stream >> token;
-					chrono.moves_to_go = stoi(token);
-					chrono.only_movetime = false;
-				}
-			}
-			if (engine::use_book && engine::get_book_move(board))
-			{
-				uint16 move{ engine::get_book_move(board) };
+			if (ignore(searching))
+				continue;
+			go(stream, searching, board, chrono);
+		}
 
-				uint64 sq1{ 1ULL << to_sq1(move) };
-				uint64 sq2{ 1ULL << to_sq2(move) };
-				uint8 flag{ to_flag(move) };
+		// unofficial commands for debugging
 
-				engine::new_move(board, sq1, sq2, flag);
-
-				log::cout
-					<< "info string book move\n"
-					<< "bestmove "
-					<< conv::to_str(sq1)
-					<< conv::to_str(sq2)
-					<< conv::to_promo(flag)
-					<< endl;
-			}
-			else
-			{
-				searching = std::thread{ search, &board, &chrono };
-			}
+		else if (input == "bench")
+		{
+			bench::search();
+		}
+		else if (token == "perft")
+		{
+			if(!(stream >> token) || token == "legal" || token == "pseudolegal")
+				bench::perft(token);
+		}
+		else if (input == "eval")
+		{
+			engine::eval(board);
 		}
 
 	} while (input != "quit");

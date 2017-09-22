@@ -1,5 +1,5 @@
 /*
-  Monolith 0.2  Copyright (C) 2017 Jonas Mayr
+  Monolith 0.3  Copyright (C) 2017 Jonas Mayr
 
   This file is part of Monolith.
 
@@ -20,11 +20,17 @@
 
 #pragma once
 
+#include <fstream>
+
 #include "position.h"
 #include "main.h"
 
-namespace book
+// reading from PolyGlot opening-books
+
+class book
 {
+private:
+
 	struct book_entry
 	{
 		uint64 key;
@@ -34,9 +40,17 @@ namespace book
 		uint16 sum;
 	};
 
-	bool open();
-	uint16 get_move(pos &board);
+	static std::ifstream book_file;
+	static int book_size;
 
-	int find_key(const uint64 &key);
-	void read_entry(book_entry &entry, int index);
+	static int find_key(const uint64 &key);
+	static void read_entry(book_entry &entry, int idx);
+
+public:
+
+	static std::string book_name;
+
+	static bool open();
+
+	static uint32 get_move(pos &board, bool best_line);
 };

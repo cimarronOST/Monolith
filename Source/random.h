@@ -1,5 +1,5 @@
 /*
-  Monolith 0.2  Copyright (C) 2017 Jonas Mayr
+  Monolith 0.3  Copyright (C) 2017 Jonas Mayr
 
   This file is part of Monolith.
 
@@ -22,12 +22,17 @@
 
 #include "main.h"
 
+// pseudo random number generation
+
 class rand_xor
 {
+private:
+
 	uint64 seed;
 	uint64 rand64();
 
 public:
+
 	rand_xor(uint64 new_seed) : seed(new_seed) {}
 	uint64 sparse64();
 };

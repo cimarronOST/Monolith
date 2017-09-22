@@ -1,5 +1,5 @@
 /*
-  Monolith 0.2  Copyright (C) 2017 Jonas Mayr
+  Monolith 0.3  Copyright (C) 2017 Jonas Mayr
 
   This file is part of Monolith.
 
@@ -18,129 +18,181 @@
 */
 
 
+#include "evaluation.h"
+#include "see.h"
 #include "sort.h"
 
 namespace
 {
-	const int p_value[]{ 1, 5, 3, 3, 9, 0, 0, 1 };
+	const int value[]{ 1, 3, 3, 5, 9, 0, 1 };
 
-	const int max_score{ 0x7fffffff };
-	const int base_score{ 1 << 30 };
+	const uint64  max_score{ 1ULL << 63 };
+	const uint64 capt_score{ 1ULL << 62 };
 }
 
-int sort::mvv_lva(pos &board, uint16 move) const
+int sort::mvv_lva(uint32 move) const
 {
-	assert(to_flag(move) <= ENPASSANT && to_flag(move) != NONE);
+	assert(to_victim(move) != NONE);
 
-	return p_value[to_flag(move)] * 100 - p_value[board.piece_sq[to_sq1(move)]];
-}
-int sort::mvv_lva_promo(pos &board, uint16 move) const
-{
-	assert(to_flag(move) >= PROMO_ROOK);
-
-	int victim{ p_value[board.piece_sq[to_sq2(move)]] + p_value[to_flag(move) - 11] - 2 };
-	return victim * 100 - p_value[to_flag(move) - 11];
+	return see::exact_value[to_victim(move)] - value[to_piece(move)];
 }
 
-void sort::sort_capt(pos &board, movegen &gen)
+int sort::mvv_lva_promo(uint32 move) const
 {
-	for (int nr{ 0 }; nr < gen.capt_cnt; ++nr)
-		score_list[nr] = base_score + mvv_lva(board, gen.list[nr]);
+	assert(to_flag(move) >= PROMO_KNIGHT);
+	assert(see::exact_value[NONE] == 0);
 
-	for (int nr{ gen.capt_cnt }; nr < gen.capt_cnt + gen.promo_cnt; ++nr)
-		score_list[nr] = base_score + mvv_lva_promo(board, gen.list[nr]);
+	int victim{ see::exact_value[to_victim(move)] + see::exact_value[to_flag(move) - 11] };
+
+	return victim - 2 * see::exact_value[PAWNS] - value[to_flag(move) - 11];
 }
 
-void sort::sort_main(pos &board, movegen &gen, uint16 *best_move, int history[][6][64], uint16 killer[][2], int depth)
+bool sort::loosing(pos &board, uint32 move) const
 {
-	static_assert(NONE << 12 == 0x6000, "killer encoding");
-	move_cnt = gen.move_cnt;
+	assert(to_victim(move) != NONE);
+	assert(to_piece(move) != NONE);
 
-	// captures + promotions
+	auto piece{ to_piece(move) };
 
-	sort_capt(board, gen);
+	if (piece == KINGS)
+		return false;
+	else if (value[to_victim(move)] >= value[piece])
+		return false;
+	else
+		return see::eval(board, move) < 0;
+}
 
-	// history
-
-	for (int i{ gen.capt_cnt + gen.promo_cnt }; i < move_cnt; ++i)
+void sort::hash(GEN_STAGE stage)
+{
+	if (list.hash_move != NO_MOVE)
 	{
-		score_list[i] = history[board.turn][board.piece_sq[to_sq1(gen.list[i])]][to_sq2(gen.list[i])];
+		uint32 *pos_list{ list.find(list.hash_move) };
+
+		assert(stage != ALL);
+
+		if (pos_list != list.movelist + list.cnt.moves)
+			score[pos_list - list.movelist] = (stage == HASH ? max_score : 0ULL);
+	}
+}
+
+void sort::tactical_see(GEN_STAGE stage)
+{
+	assert(list.cnt.loosing == 0);
+
+	// capture mvv-lva & SEE
+
+	for (int i{ 0 }; i < list.cnt.capture; ++i)
+	{
+		if (loosing(list.board, list.movelist[i]))
+		{
+			assert(stage != ALL);
+
+			score[i] = 0ULL;
+			list.movelist[lim::movegen - ++list.cnt.loosing] = list.movelist[i];
+		}
+
+		else
+			score[i] = capt_score + mvv_lva(list.movelist[i]);
 	}
 
-	// killer moves
+	// promotion mvv-lva
+
+	for (int i{ list.cnt.capture }; i < list.cnt.capture + list.cnt.promo; ++i)
+		score[i] = capt_score + mvv_lva_promo(list.movelist[i]);
+}
+
+void sort::tactical()
+{
+	// capture mvv-lva
+
+	for (int i{ 0 }; i < list.cnt.capture; ++i)
+		score[i] = capt_score + mvv_lva(list.movelist[i]);
+
+	// promotion mvv-lva
+
+	for (int i{ list.cnt.capture }; i < list.cnt.capture + list.cnt.promo; ++i)
+		score[i] = capt_score + mvv_lva_promo(list.movelist[i]);
+}
+
+void sort::quiet()
+{
+	// history heuristic
+
+	for (int i{ list.cnt.capture + list.cnt.promo }; i < list.cnt.capture + list.cnt.promo + list.cnt.quiet; ++i)
+	{
+		assert(list.board.turn == to_turn(list.movelist[i]));
+		score[i] = main.history->list[list.board.turn][to_piece(list.movelist[i])][to_sq2(list.movelist[i])];
+	}
+
+	// killer move heuristic
 
 	for (int slot{ 0 }; slot < 2; ++slot)
 	{
-		auto killer_move{ killer[depth][slot] };
-		auto piece{ to_flag(killer_move) };
+		auto piece{ to_piece(main.killer->list[main.depth][slot]) };
 
-		if (piece <= KINGS)
-		{
-			killer_move = (killer_move & 0xfff) | 0x6000;
-			if (piece != board.piece_sq[to_sq1(killer_move)])
-				continue;
-		}
+		if (piece != list.board.piece_sq[to_sq1(main.killer->list[main.depth][slot])])
+			continue;
 
-		for (int i{ gen.capt_cnt + gen.promo_cnt }; i < move_cnt; ++i)
+		for (int i{ list.cnt.capture + list.cnt.promo }; i < list.cnt.capture + list.cnt.promo + list.cnt.quiet; ++i)
 		{
-			if (gen.list[i] == killer_move)
+			if (list.movelist[i] == main.killer->list[main.depth][slot])
 			{
-				score_list[i] = base_score + 2 - slot;
+				score[i] = capt_score + 2 - slot;
 				break;
 			}
 		}
 	}
-
-	// pv-/hash-move
-
-	if (best_move != nullptr)
-		score_list[best_move - gen.list] = max_score;
 }
-void sort::sort_root(pos &board, movegen &gen, uint16 *best_move, int history[][6][64])
+
+void sort::loosing()
 {
-	move_cnt = gen.move_cnt;
-
-	// captures + promotions
-
-	sort_capt(board, gen);
-
-	// history
-
-	for (int i{ gen.capt_cnt + gen.promo_cnt }; i < move_cnt; ++i)
+	for (int i{ 0 }; i < list.cnt.loosing; ++i)
 	{
-		score_list[i] = history[board.turn][board.piece_sq[to_sq1(gen.list[i])]][to_sq2(gen.list[i])];
+		score[i] = mvv_lva(list.movelist[i]);
+	}
+}
+
+void sort::root_static(uint64 nodes[])
+{
+	pos saved{ list.board };
+
+	// evaluation & SEE of captures
+
+	for (int i{ 0 }; i < list.cnt.capture; ++i)
+	{
+		list.board.new_move(list.movelist[i]);
+		score[i] = NO_SCORE - eval::static_eval(list.board) + see::eval(saved, list.movelist[i]);
+		list.board = saved;
+	}
+
+	// evaluation of promotions and quiets
+
+	for (int i{ list.cnt.capture }; i < list.cnt.moves; ++i)
+	{
+		list.board.new_move(list.movelist[i]);
+		score[i] = NO_SCORE - eval::static_eval(list.board);
+		list.board = saved;
+	}
+
+	// assigning base value for root node-count
+
+	for (int i{ 0 }; i < list.cnt.moves; ++i)
+		nodes[i] = score[i];
+}
+
+void sort::root_dynamic(uint64 nodes[], uint32 *pv_move)
+{
+	assert(*pv_move != NO_MOVE);
+
+	// sorting by node count
+
+	for (int i{ 0 }; i < list.cnt.moves; ++i)
+	{
+		score[i] = nodes[i];
+		nodes[i] >>= 1; 
 	}
 
 	// pv-move
 
-	if (best_move != nullptr)
-		score_list[best_move - gen.list] = max_score;
-}
-void sort::sort_qsearch(pos &board, movegen &gen)
-{
-	assert(gen.capt_cnt + gen.promo_cnt == gen.move_cnt);
-	move_cnt = gen.move_cnt;
-
-	sort_capt(board, gen);
-}
-
-uint16 sort::next(movegen &gen)
-{
-	int nr{ -1 };
-
-	for (int i{ 0 }, best_score{ 0 }; i < move_cnt; ++i)
-	{
-		if (score_list[i] > best_score)
-		{
-			best_score = score_list[i];
-			nr = i;
-		}
-	}
-
-	if (nr != -1)
-	{
-		score_list[nr] = 0;
-		return gen.list[nr];
-	}
-	return 0;
+	score[pv_move - list.movelist] = max_score;
 }

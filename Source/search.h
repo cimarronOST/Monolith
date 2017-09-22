@@ -1,5 +1,5 @@
 /*
-  Monolith 0.2  Copyright (C) 2017 Jonas Mayr
+  Monolith 0.3  Copyright (C) 2017 Jonas Mayr
 
   This file is part of Monolith.
 
@@ -20,29 +20,33 @@
 
 #pragma once
 
+#include "movepick.h"
 #include "movegen.h"
 #include "position.h"
 #include "chronos.h"
 #include "main.h"
 
+// analysis functions for debugging
+
 namespace analysis
 {
 	void reset();
+	void summary(chronometer &time);
 
-#ifdef DEBUG
-
-	void summary(timer &time);
-	void root_perft(pos &board, int depth_min, int depth_max);
-	uint64 perft(pos &board, int depth);
-
-#endif
+	void root_perft(pos &board, int depth, const GEN_MODE mode);
+	uint64 perft(pos &board, int depth, const GEN_MODE mode);
 }
+
+// actual search
 
 namespace search
 {
-	uint16 id_frame(pos &board, chronos &chrono);
-	void root_alphabeta(pos &board, uint16 pv[], int &best_score, int ply);
+	uint32 id_frame(pos &board, chronos &chrono, uint32 &ponder);
+
+	int root_alphabeta(pos &board, movepick &pick, uint32 pv[], int ply);
 	int alphabeta(pos &board, int ply, int depth, int alpha, int beta);
 
 	int qsearch(pos &board, int alpha, int beta);
+
+	void stop_ponder();
 };

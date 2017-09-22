@@ -1,5 +1,5 @@
 /*
-  Monolith 0.2  Copyright (C) 2017 Jonas Mayr
+  Monolith 0.3  Copyright (C) 2017 Jonas Mayr
 
   This file is part of Monolith.
 
@@ -24,29 +24,36 @@
 
 #include "main.h"
 
+// calculating the time per move
+
 class chronos
 {
 public:
-	chronos() : time{ 0 }, incr{ 0 }, moves_to_go{ 50 } {}
+
+	chronos() : time{ 0 }, incr{ 0 }, moves_to_go{ 50 } { }
 
 	int time[2];
 	int incr[2];
 	int moves_to_go;
 
-	int movetime;
-	bool only_movetime;
+	uint64 movetime;
 
-	void set_movetime(int new_movetime);
-	int get_movetime(int turn);
+	uint64 get_movetime(int turn);
+	void set_movetime(uint64 new_time);
 };
 
-class timer
+// internal clock
+
+class chronometer
 {
 private:
-	std::chrono::time_point<std::chrono::system_clock> start_point;
+
+	std::chrono::time_point<std::chrono::system_clock> start_time;
 
 public:
-	timer() { start(); }
+
+	chronometer() { start(); }
+
 	void start();
-	int elapsed() const;
+	uint64 elapsed() const;
 };

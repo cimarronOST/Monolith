@@ -1,5 +1,5 @@
 /*
-  Monolith 0.2  Copyright (C) 2017 Jonas Mayr
+  Monolith 0.3  Copyright (C) 2017 Jonas Mayr
 
   This file is part of Monolith.
 
@@ -20,23 +20,12 @@
 
 #pragma once
 
-#include "position.h"
 #include "main.h"
 
-class game
-{
-public:
-	static int moves;
-	static uint16 movelist[];
-	static uint64 hashlist[];
+// set of positions to test performance and correctness
 
-	static void reset();
-	static void save_move(const pos &board, uint16 move);
-};
-
-namespace draw
+namespace bench
 {
-	bool verify(const pos &board, uint64 list[], int depth);
-	bool by_rep(const pos &board, uint64 list[], int depth);
-	bool by_material(const pos &board);
+	void perft(std::string mode);
+	void search();
 }

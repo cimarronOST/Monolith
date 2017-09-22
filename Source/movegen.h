@@ -1,5 +1,5 @@
 /*
-  Monolith 0.2  Copyright (C) 2017 Jonas Mayr
+  Monolith 0.3  Copyright (C) 2017 Jonas Mayr
 
   This file is part of Monolith.
 
@@ -20,113 +20,101 @@
 
 #pragma once
 
-#include <vector>
-
 #include "position.h"
 #include "main.h"
 
-using std::vector;
+// move generation, can be staged and legal or pseudolegal
 
 class movegen
 {
 public:
 
-	movegen() { }
-	movegen(pos &board, gen_e type)
+	pos &board;
+	GEN_MODE mode;
+
+	uint32 hash_move;
+
+	movegen(pos &basic_board) : board(basic_board) { }
+
+	movegen(pos &basic_board, GEN_MODE genmode) : board(basic_board), mode(genmode)
 	{
-		gen_moves(board, type);
+		init_list();
 	}
 
-	class legal
+	movegen(pos &basic_board, GEN_MODE genmode, uint32 tt_move) : board(basic_board), mode(genmode), hash_move(tt_move)
 	{
-	public:
-
-		legal() { }
-		legal(pos &board)
-		{
-			init_legal(board);
-			init_pin(board);
-		}
-		~legal()
-		{
-			unpin();
-		}
-
-		static void pin_down(pos &board);
-	};
-
-	static void init();
-	int gen_moves(pos &board, gen_e type);
-
-	// movelist
-
-	uint16 list[lim::movegen];
-	int move_cnt;
-	int promo_cnt;
-	int capt_cnt;
-
-	// movelist functions
-
-	uint16 *find(uint16 move);
-	bool in_list(uint16 move);
-
-	// bitboards needed for generation
-
-	static uint64 knight_table[64];
-	static uint64 king_table[64];
-	static uint64 pinned[64];
-	static uint64 legal_sq;
-
-	static uint64 slide_att(const int sl, const int sq, uint64 occ);
-	static uint64 check(pos &board, int turn, uint64 squares);
+		init_list();
+	}
 
 private:
 
-	// move generation
+	// preparing legal moves
 
-	void pawn_promo(pos &board);
-	void pawn_capt(pos &board);
-	void pawn_quiet(pos &board);
-	void piece_moves(pos &board, gen_e type);
-	void king_moves(pos &board, gen_e type);
+	uint64 pin[64]{ };
+	uint64 evasions;
 
-	static void init_legal(pos &board);
-	static void init_pin(pos &board);
-	static void unpin();
+	void find_pins();
+	void find_evasions();
+
+public:
+
+	// checking pseudo-legal moves
+
+	bool is_pseudolegal(uint32 move);
+
+	// concerning movelist
+
+	uint32 movelist[lim::movegen];
+
+	struct count
+	{
+		int moves{ 0 };
+		int hash{ 0 };
+		int capture{ 0 };
+		int promo{ 0 };
+		int quiet{ 0 };
+		int loosing{ 0 };
+	} cnt;
+
+	bool in_list(uint32 move);
+	uint32 *find(uint32 move);
+
+	// bitboard filling
+
+	static void init_ray(int sl);
+	static void init_king();
+	static void init_knight();
+
+	static uint64 slide_ray[2][64];
+	static uint64 knight_table[64];
+	static uint64 king_table[64];
+
+	// generating moves
+
+	void init_list();
+
+	int gen_hash();
+	int gen_tactical();
+	int gen_quiet();
+	int gen_loosing();
+
+private:
+
+	void pawn_promo();
+	void pawn_capt();
+	void pawn_quiet();
+
+	void knight(GEN_STAGE stage);
+	void bishop(GEN_STAGE stage);
+	void rook(GEN_STAGE stage);
+	void queen(GEN_STAGE stage);
+	void king(GEN_STAGE stage);
+
+	// often used variables
+
+	uint64 enemies, friends, fr_king, pawn_rank;
+	uint64 not_right, not_left;
+	uint64 gentype[2];
+
+	uint8 AHEAD, BACK;
 };
-
-namespace magic
-{
-	// initialise all arrays for magic move generation
-
-	struct entry
-	{
-		size_t offset;
-		uint64 mask;
-		uint64 magic;
-		int shift;
-	};
-
-	struct pattern
-	{
-		int shift;
-		uint64 boarder;
-	};
-
-	void init();
-
-	void init_mask(int sl);
-	void init_blocker(int sl, vector<uint64> &blocker);
-	void init_move(int sl, vector<uint64> &blocker, vector<uint64> &attack_temp);
-	void init_magic(int sl, vector<uint64> &blocker, vector<uint64> &attack_temp);
-	void init_connect(int sl, vector<uint64> &blocker, vector<uint64> &attack_temp);
-
-	void init_ray(int sl);
-	void init_king();
-	void init_knight();
-}
-
-namespace attack
-{
-	uint64 by_pawns(pos &board, int turn);
-}

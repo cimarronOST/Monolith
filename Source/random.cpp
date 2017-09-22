@@ -1,5 +1,5 @@
 /*
-  Monolith 0.2  Copyright (C) 2017 Jonas Mayr
+  Monolith 0.3  Copyright (C) 2017 Jonas Mayr
 
   This file is part of Monolith.
 
@@ -30,6 +30,7 @@ uint64 rand_xor::rand64()
 	seed ^= seed >> 27;
 	return seed * 0x2545f4914f6cdd1dULL;
 }
+
 uint64 rand_xor::sparse64()
 {
 	return rand64() & rand64() & rand64();

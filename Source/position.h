@@ -1,5 +1,5 @@
 /*
-  Monolith 0.2  Copyright (C) 2017 Jonas Mayr
+  Monolith 0.3  Copyright (C) 2017 Jonas Mayr
 
   This file is part of Monolith.
 
@@ -22,31 +22,44 @@
 
 #include "main.h"
 
+// representing the board's position and all game states
+
 class pos
 {
 public:
+
+	// representing pieces
+
 	uint64 pieces[6];
 	uint64 side[3];
 	uint8 piece_sq[64];
 	int king_sq[2];
 
-	int moves;
-	int half_moves;
+	// representing all other positional essentials
+
+	int move_cnt;
+	int half_move_cnt;
 	int turn;
-	uint64 ep_square;
-	uint8 castl_rights;
+	int not_turn;
+	uint64 ep_sq;
+	bool castl_rights[4];
+
+	// helping parameters for search & evaluation
 
 	uint64 key;
+	uint16 capture;
 	uint8 phase;
-	static uint64 nodes;
 
-	void parse_fen(string fen);
-	void new_move(uint16 move);
-	void null_move(uint64 &ep_copy);
-	void undo_null_move(uint64 &ep_copy);
+	// manipulating the position
+
+	void parse_fen(std::string fen);
+	void new_move(uint32 move);
+	void null_move(uint64 &ep_copy, uint16 &capt_copy);
+	void undo_null_move(uint64 &ep_copy, uint16 &capt_copy);
 
 	void rook_moved(uint64 &sq64, uint16 sq);
 	void clear();
 
 	bool lone_king() const;
+	bool recapture(uint32 move) const;
 };

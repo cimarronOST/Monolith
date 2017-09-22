@@ -1,5 +1,5 @@
 /*
-  Monolith 0.2  Copyright (C) 2017 Jonas Mayr
+  Monolith 0.3  Copyright (C) 2017 Jonas Mayr
 
   This file is part of Monolith.
 
@@ -24,35 +24,79 @@
 #include "position.h"
 #include "main.h"
 
+// assigning a weight to all moves in the movelist for sorting purpose
+
 class sort
 {
+public:
+
+	// history & killer heuristic types
+
+	struct history_list
+	{
+		uint64 list[2][6][64];
+	};
+
+	struct killer_list
+	{
+		uint32 list[lim::depth][2];
+	};
+
+	// storing the assigned weights
+
+	uint64 score[lim::movegen]{ };
+
 private:
-	int score_list[lim::movegen]{ };
-	int move_cnt;
 
-	void sort_capt(pos &board, movegen &gen);
+	movegen &list;
 
-	int mvv_lva(pos &board, uint16 move) const;
-	int mvv_lva_promo(pos &board, uint16 move) const;
+	// for objects of the main alphabeta routine
+
+	struct main_parameters
+	{
+		int depth;
+		killer_list *killer;
+		history_list *history;
+	} main;
+
+private:
+
+	// weighting captures & promotions
+
+	int mvv_lva(uint32 move) const;
+	int mvv_lva_promo(uint32 move) const;
+
+	bool loosing(pos &board, uint32 move) const;
 
 public:
-	sort() { };
-	sort(pos &board, movegen &gen)
+
+	// root search objects
+
+	sort(movegen &movelist, uint64 nodes[]) : list(movelist) { }
+
+	// main search objects
+
+	sort(movegen &movelist, history_list &history, killer_list &killer, int depth) : list(movelist)
 	{
-		sort_qsearch(board, gen);
-	}
-	sort(pos &board, movegen &gen, uint16 *best_move, int history[][6][64])
-	{
-		sort_root(board, gen, best_move, history);
-	}
-	sort(pos &board, movegen &gen, uint16 *best_move, int history[][6][64], uint16 killer[][2], int depth)
-	{
-		sort_main(board, gen, best_move, history, killer, depth);
+		main.depth = depth;
+		main.killer = &killer;
+		main.history = &history;
 	}
 
-	void sort_main(pos &board, movegen &gen, uint16 *best_move, int history[][6][64], uint16 killer[][2], int depth);
-	void sort_root(pos &board, movegen &gen, uint16 *best_move, int history[][6][64]);
-	void sort_qsearch(pos &board, movegen &gen);
-	
-	uint16 next(movegen &gen);
+	// qsearch objects
+
+	sort(movegen &movelist) : list(movelist) { }
+
+	// weighting qsearch & main search
+
+	void hash(GEN_STAGE stage);
+	void tactical_see(GEN_STAGE stage);
+	void tactical();
+	void quiet();
+	void loosing();
+
+	// weighting root search
+
+	void root_static(uint64 nodes[]);
+	void root_dynamic(uint64 nodes[], uint32 *pv_move);
 };

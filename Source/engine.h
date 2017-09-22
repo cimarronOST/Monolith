@@ -1,5 +1,5 @@
 /*
-  Monolith 0.2  Copyright (C) 2017 Jonas Mayr
+  Monolith 0.3  Copyright (C) 2017 Jonas Mayr
 
   This file is part of Monolith.
 
@@ -24,52 +24,69 @@
 #include "chronos.h"
 #include "main.h"
 
+// interface between the communication protocol and the engine
+
 class engine
 {
 public:
-	// position
 
-	static void new_game(pos &board, chronos &chrono);
-	static void new_move(pos &board, uint64 &sq1, uint64 &sq2, uint8 flag);
-	static void parse_fen(pos &board, chronos &chrono, string fen);
+	// board state
 
-	// bitboard
+	static void new_game(pos &board);
+	static void new_move(pos &board, uint32 move);
+	static void parse_fen(pos &board, std::string fen);
+	
+	static const std::string startpos;
 
-	static uint32 bitscan(uint64 board);
+	// updating game state
 
-	// movegen
+	static void reset_game();
+	static void save_move(const pos &board, uint32 move);
 
+	static int move_cnt;
+	static uint32 movelist[];
+	static uint64 hashlist[];
+
+	// move generation
+
+	static void init_magic();
 	static void init_movegen();
 
-	// book
+	// opening book
+
+	static void init_book();
+	static uint32 get_book_move(pos &board);
+	static std::string get_book_name();
+	static void new_book(std::string new_name);
 
 	static bool use_book;
-	static void init_book();
-	static uint16 get_book_move(pos &board);
+	static bool best_book_line;
 
-	// files
+	// file path
 
-	static void init_path(string path);
+	static void init_path(char *argv[]);
 
-	// random
-
-	static void init_rand();
-
-	// thread
-
-	static bool stop;
-
-	// hash
+	// manipulating the transposition table
 
 	static void new_hash_size(int size);
+	static void clear_hash();
+
 	static int hash_size;
 
-	// search
+	// controlling search
 
-	static uint16 alphabeta(pos &board, chronos &chrono);
+	static uint32 start_searching(pos &board, chronos &chrono, uint32 &ponder);
+	static void stop_ponder();
+
+	static bool stop;
+	static bool infinite;
+
+	static uint64 nodes;
 	static int depth;
+	static int contempt;
 
-	// eval
+	// evaluation
 
 	static void init_eval();
+	static void eval(pos &board);
 };
