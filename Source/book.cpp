@@ -1,5 +1,5 @@
 /*
-  Monolith 0.2  Copyright (C) 2017 Jonas Mayr
+  Monolith 0.3  Copyright (C) 2017 Jonas Mayr
 
   This file is part of Monolith.
 
@@ -18,16 +18,21 @@
 */
 
 
-// this file is based on the book.cpp code from PolyGlot by Fabien Letouzey
+// this file is based on PolyGlot by Fabien Letouzey
 
-#include <fstream>
+#include <random>
 
+#include "attack.h"
 #include "hash.h"
-#include "files.h"
-#include "convert.h"
+#include "logfile.h"
 #include "engine.h"
 #include "movegen.h"
 #include "book.h"
+
+std::string book::book_name{ "monolith.bin" };
+
+std::ifstream book::book_file;
+int book::book_size;
 
 namespace
 {
@@ -44,15 +49,31 @@ namespace
 		return n;
 	}
 
-	std::ifstream book_file;
-	int book_size;
+	bool is_fully_legal(pos &board, uint32 move)
+	{
+		movegen list(board);
+		pos saved(board);
+		if (list.is_pseudolegal(move))
+		{
+			board.new_move(move);
+			bool is_legal{ attack::check(board, board.not_turn, board.pieces[KINGS] & board.side[board.not_turn]) != 0ULL };
+			board = saved;
+
+			return is_legal;
+		}
+		return false;
+	}
+
+	static_assert(PROMO_KNIGHT == 12, "promo flag computation");
+	static_assert(PROMO_QUEEN  == 15, "promo flag computation");
 }
 
 bool book::open()
 {
-	string path{ files::get_path() };
-	path.erase(path.find_last_of("\\") + 1, path.size());
-	path += "book.bin";
+	if (book_file.is_open())
+		book_file.close();
+
+	std::string path{ log_file::get_path() + book_name };
 
 	book_file.open(path, std::ifstream::in | std::ifstream::binary);
 	if (!book_file.is_open())
@@ -69,96 +90,15 @@ bool book::open()
 
 	return true;
 }
-uint16 book::get_move(pos &board)
-{
-	if (book_file.is_open())
-	{
-		uint16 move;
-		int score, count{ 0 };
-
-		uint64 key{ hashing::to_key(board) };
-		book_entry entry;
-
-		for (int i{ find_key(key) }; i < book_size; ++count, ++i)
-		{
-			read_entry(entry, i);
-			if (entry.key != key)
-				break;
-			move = entry.move;
-			score = entry.count;
-
-			assert(score > 0);
-			assert(move > 0);
-		}
-		if (count)
-		{
-			read_entry(entry, find_key(key) + rand() % count);
-
-			assert(key == entry.key);
-			uint16 best_move{ entry.move };
-
-			auto sq1{ 7 - ((best_move & 0x1c0) >> 6) + ((best_move & 0xe00) >> 6) };
-			auto sq2{ 7 - (best_move & 0x007) + (best_move & 0x038) };
-			auto piece{ board.piece_sq[sq1] };
-			auto flag{ board.piece_sq[sq2] };
-
-			if (piece == PAWNS)
-			{
-				// enpassant
-
-				if ((~board.side[BOTH] & (1ULL << sq2)) && abs(sq1 - sq2) % 8 != 0)
-					flag = ENPASSANT;
-
-				// promotion
-
-				switch ((best_move & 0x7000) >> 12)
-				{
-				case 1: flag = PROMO_KNIGHT; break;
-				case 2: flag = PROMO_BISHOP; break;
-				case 3: flag = PROMO_ROOK; break;
-				case 4: flag = PROMO_QUEEN; break;
-				default: break;
-				}
-			}
-
-			// castling
-
-			else if (piece == KINGS)
-			{
-				if (sq1 == E1)
-				{
-					if (sq2 == H1) sq2 = G1, flag = castl_e::SHORT_WHITE;
-					else if (sq2 == A1) sq2 = C1, flag = castl_e::LONG_WHITE;
-				}
-				else if (sq1 == E8)
-				{
-					if (sq2 == H8) sq2 = G8, flag = castl_e::SHORT_BLACK;
-					else if (sq2 == A8) sq2 = C8, flag = castl_e::LONG_BLACK;
-				}
-			}
-
-			uint16 real_move{ encode(sq1, sq2, flag) };
-
-			// returning only legal moves
-
-			movegen gen(board, ALL);
-			if(gen.in_list(real_move))
-				return real_move;
-		}
-	}
-
-	engine::use_book = false;
-	return 0;
-}
 
 int book::find_key(const uint64 &key)
 {
+	// binary search, finding the leftmost entry
+
 	int left{ 0 };
 	int right{ book_size - 1 };
 	int mid;
 	book_entry entry;
-
-	// binary search, finds the leftmost entry
 
 	assert(left <= right);
 	while (left < right)
@@ -179,12 +119,15 @@ int book::find_key(const uint64 &key)
 
 	return (entry.key == key) ? left : book_size;
 }
-void book::read_entry(book_entry &entry, int index)
+
+void book::read_entry(book_entry &entry, int idx)
 {
-	assert(index >= 0 && index < book_size);
+	// retrieving the found book entry
+
+	assert(idx >= 0 && idx < book_size);
 	assert(book_file.is_open());
 
-	book_file.seekg(index * 16, std::ios_base::beg);
+	book_file.seekg(idx * 16, std::ios_base::beg);
 	assert(book_file.good());
 
 	entry.key = read_int(book_file, 8);
@@ -192,4 +135,99 @@ void book::read_entry(book_entry &entry, int index)
 	entry.count = static_cast<uint16>(read_int(book_file, 2));
 	entry.n = static_cast<uint16>(read_int(book_file, 2));
 	entry.sum = static_cast<uint16>(read_int(book_file, 2));
+}
+
+uint32 book::get_move(pos &board, bool best_line)
+{
+	srand(static_cast<unsigned int>(time(0)));
+
+	if (book_file.is_open() && book_size != 0)
+	{
+		int score{ 0 }, best_score{ 0 };
+		int count{ 0 }, best_count{ 0 };
+
+		ASSERT(board.key == zobrist::to_key(board));
+
+		book_entry entry;
+
+		for (int i{ find_key(board.key) }; i < book_size; ++count, ++i)
+		{
+			read_entry(entry, i);
+			if (entry.key != board.key) break;
+
+			score = entry.count;
+
+			if (best_line)
+			{
+				if (score > best_score)
+				{
+					best_score = score;
+					best_count = count;
+				}
+			}
+			else
+			{
+				best_score += score;
+				if (rand() % best_score < score)
+					best_count = count;
+			}
+
+			assert(score > 0 && entry.move != 0);
+		}
+		if (count)
+		{
+			read_entry(entry, find_key(board.key) + best_count);
+			assert(board.key == entry.key);
+
+			uint16 best_move{ entry.move };
+
+			// encoding the move
+
+			int sq1{ 7 - ((best_move & 0x1c0) >> 6) + ((best_move & 0xe00) >> 6) };
+			int sq2{ 7 - (best_move & 0x007) + (best_move & 0x038) };
+			int flag{ NONE };
+			int piece{ board.piece_sq[sq1] };
+			int victim{ board.piece_sq[sq2] };
+
+			if (piece == PAWNS)
+			{
+				// setting enpassant flag
+
+				if (victim == NONE && abs(sq1 - sq2) % 8 != 0)
+				{
+					flag = ENPASSANT;
+					victim = PAWNS;
+				}
+
+				// setting doublepush flag
+
+				if (abs(sq1 - sq2) == 16)
+					flag = DOUBLEPUSH;
+
+				// setting promotion flag
+
+				auto promo{ (best_move & 0x7000) >> 12 };
+				if (promo)
+					flag = 11 + promo;
+			}
+
+			// setting castling flag
+
+			else if (piece == KINGS)
+			{
+				if (sq1 == E1 && sq2 == H1) sq2 = G1, flag = CASTLING::WHITE_SHORT;
+				else if (sq1 == E8 && sq2 == H8) sq2 = G8, flag = CASTLING::BLACK_SHORT;
+				else if (sq1 == E1 && sq2 == A1) sq2 = C1, flag = CASTLING::WHITE_LONG;
+				else if (sq1 == E8 && sq2 == A8) sq2 = C8, flag = CASTLING::BLACK_LONG;
+			}
+
+			uint32 encoded_move{ encode(sq1, sq2, flag, piece, victim, board.turn) };
+
+			if (is_fully_legal(board, encoded_move))
+				return encoded_move;
+		}
+	}
+
+	engine::use_book = false;
+	return NO_MOVE;
 }
