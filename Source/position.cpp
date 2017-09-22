@@ -1,5 +1,5 @@
 /*
-  Monolith 0.2  Copyright (C) 2017 Jonas Mayr
+  Monolith 0.3  Copyright (C) 2017 Jonas Mayr
 
   This file is part of Monolith.
 
@@ -19,24 +19,24 @@
 
 
 #include "hash.h"
-#include "convert.h"
 #include "bitboard.h"
 #include "position.h"
 
-uint64 pos::nodes;
-
 namespace
 {
-	const char p_char[][6]
+	const char piece_char[][6]
 	{
-		{ 'P', 'R', 'N', 'B', 'Q', 'K' },
-		{ 'p', 'r', 'n', 'b', 'q', 'k' }
+		{ 'P', 'N', 'B', 'R', 'Q', 'K' },
+		{ 'p', 'n', 'b', 'r', 'q', 'k' }
 	};
 
-	const uint8 castl_r[]{ 0xfa, 0xaf };
+	const char castling_char[] { 'K', 'k', 'Q', 'q' };
+
 	const int push[]{ 8, 56 };
 
-	const int phase_value[]{ 0, 1, 1, 2, 4, 0, 0 };
+	const int phase_value[]{ 0, 2, 2, 3, 7, 0 };
+
+	const int reorder[]{ 0, 2, 1, 3 };
 	
 	int mirror(uint16 sq)
 	{
@@ -44,136 +44,162 @@ namespace
 	}
 }
 
-void pos::new_move(uint16 move)
+void pos::new_move(uint32 move)
 {
-	nodes += 1;
-	moves += 1;
-	half_moves += 1;
+	move_cnt += 1;
+	half_move_cnt += 1;
+	capture = 0;
 
-	auto sq1{ to_sq1(move) };
-	auto sq2{ to_sq2(move) };
-	assert(sq1 >= 0 && sq1 < 64);
-	assert(sq2 >= 0 && sq2 < 64);
+	move_detail md{ decode(move) };
 
-	uint64 sq1_64{ 1ULL << sq1 };
-	uint64 sq2_64{ 1ULL << sq2 };
+	uint64 sq1_64{ 1ULL << md.sq1 };
+	uint64 sq2_64{ 1ULL << md.sq2 };
 
-	auto flag{ to_flag(move) };
-	auto piece{ piece_sq[sq1] };
-	auto victim{ piece_sq[sq2] };
-
-	assert(flag == victim || flag >= 7);
-	assert(piece != NONE);
+	assert(md.sq1 >= 0 && md.sq1 < 64);
+	assert(md.sq2 >= 0 && md.sq2 < 64);
+	assert(md.piece != NONE);
+	assert(md.piece == piece_sq[md.sq1]);
+	assert(md.victim == piece_sq[md.sq2] || md.flag == ENPASSANT);
 
 	// preventing castling
 
-	auto saved_castl_r{ castl_rights };
-	rook_moved(sq2_64, sq2);
-	rook_moved(sq1_64, sq1);
+	bool s_castl_rights[4];
+	for (int i{ 0 }; i < 4; ++i)
+		s_castl_rights[i] = castl_rights[i];
+
+	rook_moved(sq2_64, md.sq2);
+	rook_moved(sq1_64, md.sq1);
 
 	// deleting the eventually captured piece
 
-	if (victim != NONE)
+	if (md.victim != NONE)
 	{
-		assert(sq2_64 & side[turn ^ 1]);
-		half_moves = 0;
+		// enpassant capturing
 
-		side[turn ^ 1] &= ~sq2_64;
-		pieces[victim] &= ~sq2_64;
-
-		phase -= phase_value[victim];
-		key ^= hashing::random64[(hashing::piece_12[victim] - turn) * 64 + mirror(sq2)];
-
-		assert(phase >= 0);
-	}
-	else if (piece == PAWNS)
-	{
-		half_moves = 0;
-		if (flag == ENPASSANT)
+		if (md.flag == ENPASSANT)
 		{
-			assert(ep_square != 0);
+			assert(ep_sq != 0);
 
-			uint64 capt{ shift(ep_square, push[turn ^ 1]) };
-			assert(capt & pieces[PAWNS] & side[turn ^ 1]);
+			uint64 capt{ shift(ep_sq, push[not_turn]) };
+			assert(capt & pieces[PAWNS] & side[not_turn]);
 
 			pieces[PAWNS] &= ~capt;
-			side[turn ^ 1] &= ~capt;
+			side[not_turn] &= ~capt;
 
-			bb::bitscan(capt);
-			uint16 sq_old{ static_cast<uint16>(bb::lsb()) };
-			
+			uint16 sq_old{ static_cast<uint16>(bb::bitscan(capt)) };
+
 			assert(piece_sq[sq_old] == PAWNS);
 			piece_sq[sq_old] = NONE;
 
-			key ^= hashing::random64[(BLACK - turn) * 64 + mirror(sq_old)];
+			capture = md.sq2;
+			key ^= zobrist::rand_key[(turn << 6) + mirror(sq_old)];
+		}
+
+		// normal capturing
+		
+		else
+		{
+			assert(sq2_64 & side[not_turn]);
+			half_move_cnt = 0;
+
+			side[not_turn] &= ~sq2_64;
+			pieces[md.victim] &= ~sq2_64;
+
+			capture = md.sq2;
+			phase -= phase_value[md.victim];
+			key ^= zobrist::rand_key[(((md.victim << 1) + turn) << 6) + mirror(md.sq2)];
+
+			assert(phase >= 0);
 		}
 	}
 
-	// pawn double push
+	// resetting the half-move-clock
 
-	ep_square = 0ULL;
-	if (piece == PAWNS && abs(sq1 - sq2) == 16)
+	else if (md.piece == PAWNS)
 	{
-		ep_square = shift(sq1_64, push[turn]);
+		half_move_cnt = 0;
+	}
 
-		auto file_idx{ sq1 & 7 };
-		if (pieces[PAWNS] & side[turn ^ 1] & hashing::ep_flank[turn][file_idx])
-			key ^= hashing::random64[hashing::offset.ep + 7 - file_idx];
+	// enpassant square is not valid anymore
+
+	if (ep_sq)
+	{
+		auto file_idx{ bb::bitscan(ep_sq) & 7 };
+		if (pieces[PAWNS] & side[turn] & zobrist::ep_flank[not_turn][file_idx])
+			key ^= zobrist::rand_key[zobrist::offset.ep + 7 - file_idx];
+
+		ep_sq = 0ULL;
+	}
+
+	// doublepushing pawn
+
+	if (md.flag == DOUBLEPUSH)
+	{
+		assert(md.piece == PAWNS && md.victim == NONE);
+		ep_sq = 1ULL << ((md.sq1 + md.sq2) / 2);
+
+		auto file_idx{ md.sq1 & 7 };
+		if (pieces[PAWNS] & side[not_turn] & zobrist::ep_flank[turn][file_idx])
+			key ^= zobrist::rand_key[zobrist::offset.ep + 7 - file_idx];
 	}
 
 	// doing the move
 
-	pieces[piece] ^= sq1_64; side[turn] ^= sq1_64;
-	pieces[piece] |= sq2_64; side[turn] |= sq2_64;
-	piece_sq[sq2] = piece;
-	piece_sq[sq1] = NONE;
+	pieces[md.piece] ^= sq1_64;
+	pieces[md.piece] |= sq2_64;
 
-	int piece12 = hashing::piece_12[piece];
-	key ^= hashing::random64[(piece12 - turn) * 64 + mirror(sq1)];
-	key ^= hashing::random64[(piece12 - turn) * 64 + mirror(sq2)];
+	side[turn] ^= sq1_64;
+	side[turn] |= sq2_64;
 
-	if (flag >= 8)
+	piece_sq[md.sq2] = md.piece;
+	piece_sq[md.sq1] = NONE;
+
+	int idx{ ((md.piece << 1) + not_turn) << 6 };
+	key ^= zobrist::rand_key[idx + mirror(md.sq1)];
+	key ^= zobrist::rand_key[idx + mirror(md.sq2)];
+
+	if (md.flag >= 8)
 	{
 		// castling
 
-		if (flag <= 11)
+		if (md.flag <= 11)
 		{
-			switch (flag)
+			switch (md.flag)
 			{
-			case castl_e::SHORT_WHITE:
+			case CASTLING::WHITE_SHORT:
 				pieces[ROOKS] ^= 0x1, side[turn] ^= 0x1;
 				pieces[ROOKS] |= 0x4, side[turn] |= 0x4;
 				piece_sq[H1] = NONE, piece_sq[F1] = ROOKS;
 				
-				key ^= hashing::random64[(7 - turn) * 64 + 7];
-				key ^= hashing::random64[(7 - turn) * 64 + 5];
+				key ^= zobrist::rand_key[((7 - turn) << 6) + 7];
+				key ^= zobrist::rand_key[((7 - turn) << 6) + 5];
 				break;
 				
-			case castl_e::SHORT_BLACK:
+			case CASTLING::BLACK_SHORT:
 				pieces[ROOKS] ^= 0x100000000000000, side[turn] ^= 0x100000000000000;
 				pieces[ROOKS] |= 0x400000000000000, side[turn] |= 0x400000000000000;
 				piece_sq[H8] = NONE, piece_sq[F8] = ROOKS;
 
-				key ^= hashing::random64[(7 - turn) * 64 + 63];
-				key ^= hashing::random64[(7 - turn) * 64 + 61];
+				key ^= zobrist::rand_key[((7 - turn) << 6) + 63];
+				key ^= zobrist::rand_key[((7 - turn) << 6) + 61];
 				break;
 				
-			case castl_e::LONG_WHITE:
+			case CASTLING::WHITE_LONG:
 				pieces[ROOKS] ^= 0x80, side[turn] ^= 0x80;
 				pieces[ROOKS] |= 0x10, side[turn] |= 0x10;
 				piece_sq[A1] = NONE, piece_sq[D1] = ROOKS;
 
-				key ^= hashing::random64[(7 - turn) * 64];
-				key ^= hashing::random64[(7 - turn) * 64 + 3];
+				key ^= zobrist::rand_key[ (7 - turn) << 6];
+				key ^= zobrist::rand_key[((7 - turn) << 6) + 3];
 				break;
 				
-			case castl_e::LONG_BLACK:
+			case CASTLING::BLACK_LONG:
 				pieces[ROOKS] ^= 0x8000000000000000, side[turn] ^= 0x8000000000000000;
 				pieces[ROOKS] |= 0x1000000000000000, side[turn] |= 0x1000000000000000;
 				piece_sq[A8] = NONE, piece_sq[D8] = ROOKS;
 
-				key ^= hashing::random64[(7 - turn) * 64 + 56];
-				key ^= hashing::random64[(7 - turn) * 64 + 59];
+				key ^= zobrist::rand_key[((7 - turn) << 6) + 56];
+				key ^= zobrist::rand_key[((7 - turn) << 6) + 59];
 				break;
 				
 			default:
@@ -181,23 +207,23 @@ void pos::new_move(uint16 move)
 			}
 		}
 
-		// promotion
+		// promoting
 
 		else
 		{
-			int promo_p{ flag - 11 };
+			int promo_p{ md.flag - 11 };
 
-			assert(flag >= 12 && flag <= 15);
+			assert(md.flag >= 12 && md.flag <= 15);
 			assert(pieces[PAWNS] & sq2_64);
-			assert(piece_sq[sq2] == PAWNS);
+			assert(piece_sq[md.sq2] == PAWNS);
 
 			pieces[PAWNS] ^= sq2_64;
 			pieces[promo_p] |= sq2_64;
-			piece_sq[sq2] = promo_p;
+			piece_sq[md.sq2] = promo_p;
 
-			int sq_new{ mirror(sq2) };
-			key ^= hashing::random64[(BLACK - turn) * 64 + sq_new];
-			key ^= hashing::random64[(hashing::piece_12[promo_p] - turn) * 64 + sq_new];
+			int sq_new{ mirror(md.sq2) };
+			key ^= zobrist::rand_key[(not_turn << 6) + sq_new];
+			key ^= zobrist::rand_key[(((promo_p << 1) + not_turn) << 6) + sq_new];
 
 			phase += phase_value[promo_p];
 		}
@@ -207,84 +233,125 @@ void pos::new_move(uint16 move)
 
 	if (sq2_64 & pieces[KINGS])
 	{
-		castl_rights &= castl_r[turn];
-		king_sq[turn] = sq2;
+		castl_rights[turn] = false;
+		castl_rights[turn + 2] = false;
+
+		king_sq[turn] = md.sq2;
 	}
 
-	if (saved_castl_r != castl_rights)
+	// updating the hash when castling rights change
+
+	for (int i{ 0 }; i < 4; ++i)
 	{
-		auto changes{ saved_castl_r ^ castl_rights };
-		for (int i{ 0 }; i < 4; ++i)
-		{
-			if (changes & castl_right[i])
-				key ^= hashing::random64[hashing::offset.castl + i];
-		}
+		if(s_castl_rights[i] != castl_rights[i])
+			key ^= zobrist::rand_key[zobrist::offset.castling + reorder[i]];
 	}
 
+	// updating side to move
+
+	not_turn ^= 1;
 	turn ^= 1;
-	key ^= hashing::is_turn[0];
+	key ^= zobrist::is_turn[0];
 
 	side[BOTH] = side[WHITE] | side[BLACK];
+
+	assert(turn == (not_turn ^ 1));
 	assert(side[BOTH] == (side[WHITE] ^ side[BLACK]));
+	ASSERT(zobrist::to_key(*this) == key);
 }
 
-void pos::null_move(uint64 &ep_copy)
+void pos::rook_moved(uint64 &sq64, uint16 sq)
 {
-	// updating hash key
+	// updating castling rights when rook is moved
 
-	key ^= hashing::is_turn[0];
-	if (ep_square != 0)
+	if (sq64 & pieces[ROOKS])
 	{
-		bb::bitscan(ep_square);
-		auto file_idx{ bb::lsb() & 7 };
-		if (pieces[PAWNS] & side[turn ^ 1] & hashing::ep_flank[turn][file_idx])
-			key ^= hashing::random64[hashing::offset.ep + 7 - file_idx];
+		if (sq64 & side[WHITE])
+		{
+			if (sq == H1) castl_rights[WS] = false;
+			else if (sq == A1) castl_rights[WL] = false;
+		}
+		else
+		{
+			if (sq == H8) castl_rights[BS] = false;
+			else if (sq == A8) castl_rights[BL] = false;
+		}
+	}
+}
+
+void pos::null_move(uint64 &ep_copy, uint16 &capt_copy)
+{
+	// doing a null move, used for null move pruning
+
+	key ^= zobrist::is_turn[0];
+	capt_copy = capture;
+
+	if (ep_sq)
+	{
+		auto file_idx{ bb::bitscan(ep_sq) & 7 };
+		if (pieces[PAWNS] & side[turn] & zobrist::ep_flank[not_turn][file_idx])
+			key ^= zobrist::rand_key[zobrist::offset.ep + 7 - file_idx];
+
+		ep_copy = ep_sq;
+		ep_sq = 0;
 	}
 
-	ep_copy = ep_square;
-	ep_square = 0;
-	half_moves += 1;
-	moves += 1;
-	nodes += 1;
+	half_move_cnt += 1;
+	move_cnt += 1;
 	turn ^= 1;
-}
-void pos::undo_null_move(uint64 &ep_copy)
-{
-	// updating hash key
+	not_turn ^= 1;
 
-	key ^= hashing::is_turn[0];
-	if (ep_copy != 0)
+	ASSERT(zobrist::to_key(*this) == key);
+}
+
+void pos::undo_null_move(uint64 &ep_copy, uint16 &capt_copy)
+{
+	// undoing the null move
+
+	key ^= zobrist::is_turn[0];
+	capture = capt_copy;
+
+	if (ep_copy)
 	{
-		bb::bitscan(ep_copy);
-		auto file_idx{ bb::lsb() & 7 };
-		if (pieces[PAWNS] & side[turn ^ 1] & hashing::ep_flank[turn][file_idx])
-			key ^= hashing::random64[hashing::offset.ep + 7 - file_idx];
+		auto file_idx{ bb::bitscan(ep_copy) & 7 };
+		if (pieces[PAWNS] & side[not_turn] & zobrist::ep_flank[turn][file_idx])
+			key ^= zobrist::rand_key[zobrist::offset.ep + 7 - file_idx];
+
+		ep_sq = ep_copy;
 	}
 
-	ep_square = ep_copy;
-	half_moves -= 1;
-	moves -= 1;
+	half_move_cnt -= 1;
+	move_cnt -= 1;
 	turn ^= 1;
+	not_turn ^= 1;
+
+	ASSERT(zobrist::to_key(*this) == key);
 }
+
 void pos::clear()
 {
 	for (auto &p : pieces) p = 0ULL;
 	for (auto &s : side) s = 0ULL;
 	for (auto &p : piece_sq) p = NONE;
+	for (auto &c : castl_rights) c = false;
 
-	moves = 0;
-	half_moves = 0;
-	castl_rights = 0;
-	ep_square = 0ULL;
+	move_cnt = 0;
+	half_move_cnt = 0;
+	ep_sq = 0ULL;
 	turn = WHITE;
+	not_turn = BLACK;
 	phase = 0;
+	capture = 0;
 }
-void pos::parse_fen(string fen)
+
+void pos::parse_fen(std::string fen)
 {
 	clear();
 	int sq{ 63 };
 	uint32 focus{ 0 };
 	assert(focus < fen.size());
+
+	// all pieces
 
 	while (focus < fen.size() && fen[focus] != ' ')
 	{
@@ -307,7 +374,7 @@ void pos::parse_fen(string fen)
 			{
 				for (int col{ WHITE }; col <= BLACK; ++col)
 				{
-					if (fen[focus] == p_char[col][piece])
+					if (fen[focus] == piece_char[col][piece])
 					{
 						pieces[piece] |= 1ULL << sq;
 						side[col] |= 1ULL << sq;
@@ -327,50 +394,45 @@ void pos::parse_fen(string fen)
 	side[BOTH] = side[WHITE] | side[BLACK];
 	assert(side[BOTH] == (side[WHITE] ^ side[BLACK]));
 
-	// king squares
+	// finding king squares
 
 	for (int col{ WHITE }; col <= BLACK; ++col)
-	{
-		bb::bitscan(pieces[KINGS] & side[col]);
-		king_sq[col] = bb::lsb();
-	}
+		king_sq[col] = bb::bitscan(pieces[KINGS] & side[col]);
 	
-	// turn
+	// side to move
 
 	focus += 1;
 	if (fen[focus] == 'w')
 		turn = WHITE;
 	else if (fen[focus] == 'b')
 		turn = BLACK;
-	
-	// castling
+	not_turn = turn ^ 1;
+
+	// castling rights
 
 	focus += 2;
 	while (focus < fen.size() && fen[focus] != ' ')
 	{
-		if (fen[focus] == '-')
-			;
-		else if (fen[focus] == 'K')
-			castl_rights |= castl_right[SW];
-		else if (fen[focus] == 'Q')
-			castl_rights |= castl_right[LW];
-		else if (fen[focus] == 'k')
-			castl_rights |= castl_right[SB];
-		else if (fen[focus] == 'q')
-			castl_rights |= castl_right[LB];
+		for (int i{ 0 }; i < 4; ++i)
+		{
+			if (fen[focus] == castling_char[i])
+				castl_rights[i] = true;
+		}
 		focus += 1;
 	}
 
-	// enpassant
+	// enpassant possibility
 
 	focus += 1;
 	if (fen[focus] == '-')
 		focus += 1;
 	else
 	{
-		ep_square = conv::to_bb(fen.substr(focus, 2));
+		ep_sq = to_bb(fen.substr(focus, 2));
 		focus += 2;
 	}
+
+	key = zobrist::to_key(*this);
 
 	if (focus >= fen.size() - 1)
 		return;
@@ -378,40 +440,26 @@ void pos::parse_fen(string fen)
 	// half move count
 
 	focus += 1;
-	string half_move_c;
+	std::string half_moves;
 	while (focus < fen.size() && fen[focus] != ' ')
-		half_move_c += fen[focus++];
-	half_moves = stoi(half_move_c);
+		half_moves += fen[focus++];
+	half_move_cnt = stoi(half_moves);
 
 	// move count
 
 	focus += 1;
-	string move_c;
+	std::string moves;
 	while (focus < fen.size() && fen[focus] != ' ')
-		move_c += fen[focus++];
-	moves = stoi(move_c);
-
-	key = hashing::to_key(*this);
-}
-
-void pos::rook_moved(uint64 &sq64, uint16 sq)
-{
-	if (sq64 & pieces[ROOKS])
-	{
-		if (sq64 & side[WHITE])
-		{
-			if (sq == H1) castl_rights &= ~castl_right[SW];
-			else if (sq == A1) castl_rights &= ~castl_right[LW];
-		}
-		else
-		{
-			if (sq == H8) castl_rights &= ~castl_right[SB];
-			else if (sq == A8) castl_rights &= ~castl_right[LB];
-		}
-	}
+		moves += fen[focus++];
+	move_cnt = stoi(moves) * 2 - 1 - turn;
 }
 
 bool pos::lone_king() const
 {
 	return (pieces[KINGS] | pieces[PAWNS]) == side[BOTH];
+}
+
+bool pos::recapture(uint32 move) const
+{
+	return to_sq2(move) == capture;
 }
