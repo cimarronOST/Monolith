@@ -21,13 +21,13 @@ Without them this little project would have never been possible.
 
 
 ## Strenght
-Monolith 0.2 achieved 2232 Elo on the CCRL 40/4 (www.computerchess.org.uk/ccrl/404).
-I expect Monolith 0.3 to be roughly 100 Elo stronger.
+Monolith 0.3 64-bit achieved 2402 Elo on the CCRL 40/4 (www.computerchess.org.uk/ccrl/404).
+That's a gain of about +170 Elo to the previous version.
 
 
 ## Main changes to the previous version
 - added Principal Variation Search
-- added reverse futility pruning
+- added Reverse Futility Pruning
 - added SEE for move-ordering
 - added SEE pruning in quiescence search
 - new and improved search extensions
