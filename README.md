@@ -15,7 +15,7 @@ Without them this little project would have never been possible.
 - staged pseudo legal move-generation with magic bitboards
 - alphabeta-search with most of the standard enhancements
 - basic move ordering
-- transposition table with 4 buckets
+- transposition table with buckets of 4 slots
 - still simple hand-tuned evaluation
 - internal support for PolyGlot opening books
 
