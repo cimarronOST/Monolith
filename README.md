@@ -21,8 +21,8 @@ Without them this little project would have never been possible.
 
 
 ## Strenght
-Monolith 0.3 64-bit achieved 2402 Elo on the CCRL 40/4 (www.computerchess.org.uk/ccrl/404).
-That's a gain of about +170 Elo to the previous version.
+Monolith 0.3 64-bit achieved 2413 Elo on the CCRL 40/4 (www.computerchess.org.uk/ccrl/404).
+That's a gain of about +180 Elo to the previous version.
 
 
 ## Main changes to the previous version
