@@ -12,17 +12,15 @@ Without them this little project would have never been possible.
 
 
 ## Main features
-- staged pseudo legal move-generation with magic bitboards
+- staged pseudo-legal move-generation with magic bitboards
 - alphabeta-search with most of the standard enhancements
-- basic move ordering
 - transposition table with buckets of 4 slots
-- still simple hand-tuned evaluation
+- efficient hand-tuned evaluation
 - internal support for PolyGlot opening books
 
 
 ## Strenght
-Monolith 0.3 64-bit achieved 2413 Elo on the CCRL 40/4 (www.computerchess.org.uk/ccrl/404).
-That's a gain of about +180 Elo to the previous version.
+Monolith 0.3 64-bit achieved more than 2400 Elo on both CCRL 40/4 (www.computerchess.org.uk/ccrl/404/index.html) and CCRL 40/40 (www.computerchess.org.uk/ccrl/4040/index.html). That's a gain of about +180 Elo to the previous version.
 
 
 ## Main changes to the previous version
