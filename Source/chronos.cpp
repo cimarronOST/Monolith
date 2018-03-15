@@ -1,5 +1,5 @@
 /*
-  Monolith 0.3  Copyright (C) 2017 Jonas Mayr
+  Monolith 0.4  Copyright (C) 2017 Jonas Mayr
 
   This file is part of Monolith.
 
@@ -18,32 +18,39 @@
 */
 
 
+#include "engine.h"
 #include "chronos.h"
 
-uint64 chronos::get_movetime(int turn)
+uint64 chronomanager::get_movetime(int turn)
 {
-	if (movetime) return movetime;
+	// calculating the ideal search time for the current move
 
-	// applying a safety margin on the movetime
+	if (infinite)
+		return movetime - engine::overhead;
 
-	movetime = time[turn] / moves_to_go + incr[turn];
-	movetime -= movetime / 20 + incr[turn] / moves_to_go;
+	auto max_time{ time[turn] + incr[turn] * moves_to_go };
+	auto target_time{ time[turn] / moves_to_go + incr[turn] - engine::overhead };
 
-	return movetime;
-}
+	if (engine::ponder)
+		target_time = std::min(target_time * 4 / 3, max_time);
 
-void chronos::set_movetime(uint64 new_time)
-{
-	movetime = new_time - new_time / 30;
+	movetime = target_time - target_time / 20 - incr[turn] / (moves_to_go + 1);
+
+	return std::max(movetime, 1ULL);
 }
 
 void chronometer::start()
 {
+	// starting the internal clock
+
 	start_time = std::chrono::system_clock::now();
 }
 
-uint64 chronometer::elapsed() const
+uint64 chronometer::split()
 {
-	return std::chrono::duration_cast<std::chrono::duration<uint64, std::ratio<1, 1000>>>
+	// returning the elapsed time since start() in milliseconds
+
+	elapsed = std::chrono::duration_cast<std::chrono::duration<uint64, std::ratio<1, 1000>>>
 		(std::chrono::system_clock::now() - start_time).count();
+	return elapsed;
 }

@@ -1,5 +1,5 @@
 /*
-  Monolith 0.3  Copyright (C) 2017 Jonas Mayr
+  Monolith 0.4  Copyright (C) 2017 Jonas Mayr
 
   This file is part of Monolith.
 
@@ -32,14 +32,15 @@ namespace
 
 int main(int argc, char* argv[])
 {
-	std::cout << "Monolith " << version << std::endl;
+	std::cout << "Monolith " << uci::version_number << std::endl;
 
 	engine::init_path(argv);
+	engine::init_book();
 	engine::init_magic();
-	engine::init_movegen();
+	engine::init_attack();
+	engine::init_zobrist();
 	engine::init_eval();
 
 	uci::loop();
-
 	return 0;
 }

@@ -1,5 +1,5 @@
 /*
-  Monolith 0.3  Copyright (C) 2017 Jonas Mayr
+  Monolith 0.4  Copyright (C) 2017 Jonas Mayr
 
   This file is part of Monolith.
 
@@ -23,7 +23,6 @@
 #include <sstream>
 #include <thread>
 
-#include "chronos.h"
 #include "position.h"
 #include "main.h"
 
@@ -31,12 +30,15 @@
 
 namespace uci
 {
+	const std::string version_number{ "0.4" };
+
 	void loop();
 
-	void search(pos *board, chronos *chrono);
-	void go(std::istringstream &stream, std::thread &searching, pos &board, chronos &chrono);
+	void search(board *pos, uint64 time);
+	void searchmoves(std::istringstream &stream, board &pos);
+	void go(std::istringstream &stream, std::thread &searching, board &pos);
 
-	void options();
-	void setoption(std::istringstream &stream);
-	void position(std::istringstream &stream, pos &board);
+	void show_options(board &pos);
+	void setoption(std::istringstream &stream, board &pos);
+	void position(std::istringstream &stream, board &pos);
 }

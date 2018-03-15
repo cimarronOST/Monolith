@@ -23,30 +23,10 @@
 #include "position.h"
 #include "main.h"
 
-// bitboard attacking functions
+// converting the internally encoded move as specified by the UCI-protocol
 
-class attack
+namespace notation
 {
-public:
-
-	// attacking bitboards
-
-	static uint64 in_front[2][64];
-	static uint64 slide_map[2][64];
-	static uint64 knight_map[64];
-	static uint64 king_map[64];
-
-	static void fill_tables();
-
-	// detecting check & generating attacks
-
-	static uint64 check(const board &pos, int turn, uint64 all_sq);
-
-	template<sliding_type sl> static uint64 by_slider(int sq, uint64 occ);
-	static uint64 by_pawns(const board &pos, int turn);
-
-	// assisting SEE
-
-	static uint64 to_square(const board &pos, int sq);
-	static uint64 add_xray(const board &pos, int sq, uint64 &occ);
-};
+	std::string to_str(int sq);
+	std::string algebraic(uint32 move);
+}

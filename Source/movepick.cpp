@@ -1,5 +1,5 @@
 /*
-  Monolith 0.3  Copyright (C) 2017 Jonas Mayr
+  Monolith 0.4  Copyright (C) 2017 Jonas Mayr
 
   This file is part of Monolith.
 
@@ -20,61 +20,81 @@
 
 #include "movepick.h"
 
-void movepick::rearrange_root(uint64 nodes[], uint32 *pv_move)
+void movepick_root::rearrange_moves(uint32 pv_move, uint32 multipv_move)
 {
-	cnt.attempts = cnt.moves;
-	weight.root_dynamic(nodes, pv_move);
+	// resorting the root node moves or excluding already searched multipv move
+
+	if (multipv_move == NO_MOVE)
+		sort.dynamical(pv_move);
+	else
+		sort.exclude_move(multipv_move);
+}
+
+bool movepick_root::single_reply() const
+{
+	// checking if there is only a single legal move
+
+	return list.cnt.moves == 1
+		&& !engine::infinite
+		&& engine::limit.moves.empty();
 }
 
 void movepick::gen_weight()
 {
-	list.cnt.moves = list.cnt.hash = list.cnt.capture = list.cnt.promo = list.cnt.quiet = 0;
+	// generating and weighting the moves of the current stage
+
+	list.cnt.moves = list.cnt.capture = list.cnt.promo = 0;
+	assert(cnt.cycles >= 0);
 
 	switch (stage[cnt.cycles])
 	{
-	case ALL:
-		cnt.moves = list.gen_tactical() + list.gen_quiet();
-		weight.tactical_see(ALL);
-		weight.quiet();
-		weight.hash(ALL);
-		break;
-
 	case HASH:
-		cnt.moves = list.gen_hash();
-		weight.hash(HASH);
-		break;
-
-	case TACTICAL:
-		cnt.moves = list.gen_tactical();
-		weight.tactical();
+		cnt.moves = list.gen_hash(weight.quiets.hash_move);
+		weight.hash();
 		break;
 
 	case WINNING:
-		cnt.moves = list.gen_tactical();
-		weight.tactical_see(WINNING);
-		weight.hash(WINNING);
+		cnt.moves = list.gen_tactical<PROMO_ALL>();
+		weight.tactical_see();
 		break;
 
-	case LOOSING:
-		cnt.moves = list.gen_loosing();
-		weight.loosing();
-		weight.hash(LOOSING);
+	case KILLER:
+		cnt.moves = list.gen_killer(weight.quiets.killer->list, weight.quiets.depth, weight.quiets.counter);
+		weight.killer();
 		break;
 
 	case QUIET:
 		cnt.moves = list.gen_quiet();
 		weight.quiet();
-		weight.hash(QUIET);
+		break;
+
+	case LOOSING:
+		cnt.moves = list.gen_loosing();
+		weight.loosing();
+		break;
+
+	case TACTICAL:
+		cnt.moves = list.gen_tactical<PROMO_QUEEN>();
+		weight.tactical();
+		break;
+
+	case CHECK:
+		cnt.moves = list.gen_check();
+		weight.check();
+		break;
+
+	case EVASION:
+		cnt.moves = list.gen_quiet();
+		weight.evasion();
 		break;
 
 	default:
 		assert(false);
 	}
-
 	cnt.attempts = cnt.moves;
 }
 
-uint32 *movepick::next()
+uint32 movepick::next()
 {
 	// cycling through generation stages
 
@@ -82,41 +102,41 @@ uint32 *movepick::next()
 	{
 		cnt.cycles += 1;
 		if (cnt.cycles >= cnt.max_cycles)
-			return nullptr;
-
+			return NO_MOVE;
 		gen_weight();
 	}
 
 	// finding the highest score
 
-	int best_idx{ -1 };
-	uint64 best_score{ 0 };
+	move_idx = -1;
+	auto best_score{ 0ULL };
 
-	for (int i{ 0 }; i < cnt.moves; ++i)
+	for (auto i{ 0 }; i < cnt.moves; ++i)
 	{
 		if (weight.score[i] > best_score)
 		{
 			best_score = weight.score[i];
-			best_idx = i;
+			move_idx = i;
 		}
 	}
 
 	assert(cnt.attempts >= 1);
 	assert(cnt.moves == list.cnt.moves);
-
 	cnt.attempts -= 1;
 
-	// hash move and loosing moves might have gotten hidden
-
-	if (best_idx == -1)
+	if (move_idx == -1)
 	{
 		assert(stage[cnt.cycles] != HASH);
-		assert(cnt.attempts == 0 || stage[cnt.cycles] == WINNING);
+		assert(cnt.attempts == 0
+			|| stage[cnt.cycles] == WINNING
+			|| stage[cnt.cycles] == QUIET
+			|| engine::multipv > 1);
 
+		cnt.attempts = 0;
 		return next();
 	}
 
-	weight.score[best_idx] = 0ULL;
-
-	return &list.movelist[best_idx];
+	attempts += 1;
+	weight.score[move_idx] = 0ULL;
+	return list.move[move_idx];
 }

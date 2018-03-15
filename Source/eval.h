@@ -1,5 +1,5 @@
 /*
-  Monolith 0.3  Copyright (C) 2017 Jonas Mayr
+  Monolith 0.4  Copyright (C) 2017 Jonas Mayr
 
   This file is part of Monolith.
 
@@ -20,6 +20,7 @@
 
 #pragma once
 
+#include "pawn.h"
 #include "position.h"
 #include "main.h"
 
@@ -27,14 +28,27 @@
 
 namespace eval
 {
-	// evaluating functions
+	void fill_tables();
 
-	void pieces(pos &board, int sum[][2]);
-	void pawns(pos &board, int sum[][2]);
+	// main interface functions
 
-	int static_eval(pos &board);
+	int   static_eval(const board &pos);
+	void itemise_eval(const board &pos);
 
-	void init();
+	// high level evaluation
+
+	bool obvious_draw(const board &pos);
+	int scale_draw(const board &pos, int score);
+	int interpolate(const board &pos, int sum[][2][2]);
+	void evaluate(const board &pos, int sum[][2][2]);
+
+	// low level evaluation & weighting
+
+	void pieces(const board &pos, int sum[][2][2], int col);
+
+	void pawns(const board &pos, int sum[][2][2]);
+	void pawn_base(const board &pos, pawn::hash &entry);
+	void pawn_addendum(const board &pos, int sum[][2][2], pawn::hash &entry, int col);
 
 	// material weights
 
@@ -44,40 +58,54 @@ namespace eval
 		{ 100, 320, 350, 550, 1050, 0 }
 	};
 
+	const int phase_value[6]
+	{ 0, 2, 2, 3, 7 };
+
 	// piece weights
 
 	const int bishop_pair[2]
 	{ 15, 30 };
-	const int major_behind_pp[2]
+	const int knight_outpost[2]
+	{ 5,  2 };
+
+	const int major_on_7th[2]
 	{ 10, 20 };
-	const int rook_on_7th[2]
-	{ 10, 20 };
-	const int knights_connected
-	{ 10 };
-	const int rook_open_file
-	{ 25 };
+	const int rook_open_file[2]
+	{ 25,  0 };
 
 	// king safety weights
-	// derived from Toga
+	// credits go to https://chessprogramming.wikispaces.com/King+Safety
 
-	const int king_safety_w[8]
+	const int threat_value[5]
+	{ 0, 2, 2, 3, 5 };
+	const int king_threat[64]
 	{
-		0, 0, 50, 75, 88, 94, 97, 99
-	};
-	const int king_threat[5]
-	{
-		0, 20, 20, 40, 80
+		  0,   0,   0,   2,   3,   5,   7,   9,
+		 12,  15,  18,  22,  26,  30,  35,  39,
+		 44,  50,  56,  62,  68,  75,  82,  85,
+		 89,  97, 105, 113, 122, 131, 140, 150,
+		169, 180, 191, 202, 213, 225, 237, 248,
+		260, 272, 283, 295, 307, 319, 330, 342,
+		354, 366, 377, 389, 401, 412, 424, 436,
+		448, 459, 471, 483, 494, 500, 500, 500
 	};
 
-	// passed pawn weights
+	// pawn weights
 
-	static int passed_pawn[2][8]
-	{
-		{ 0, 0, 0, 20, 60, 110, 170, 0 }
-	};
-	
+	const int isolated[2]
+	{ 10, 20 };
+
+	const int king_pp_distance[2]
+	{ 20, 5 };
+	static int passed_rank[2][8]
+	{ { 0, 0, 0, 20, 50, 120, 190, 0 } };
+
+	static int shield_rank[2][8]
+	{ { 0, 0, 10, 20, 25, 25, 25, 0 } };
+	static int storm_rank[2][8]
+	{ { 0, 0, 0, 5, 10, 20, 0, 0 } };
+
 	// mobility weights
-	// derived from Glaurung by Tord Romstad
 
 	const int bishop_mob[2][14]
 	{
@@ -102,13 +130,13 @@ namespace eval
 		{ -20, -15, -8, 0, 8, 12, 15, 17, 18 }
 	};
 
-	// piece square table
+	// piece square tables
 
-	static int psqt[2][6][2][64] // [color][piece][stage][value]
+	static int psqt[2][6][2][64]
 	{
 		{
 			{
-				{ // [PAWNS][MG][]
+				{ // [WHITE][PAWNS][MG][SQ]
 					 0,  0,  0,  0,  0,  0,  0,  0,
 					50, 50, 50, 50, 50, 50, 50, 50,
 					10, 10, 20, 30, 30, 20, 10, 10,
@@ -118,19 +146,19 @@ namespace eval
 					 5, 10, 10,-25,-25, 10, 10,  5,
 					 0,  0,  0,  0,  0,  0,  0,  0
 				},
-				{ // [PAWNS][EG][]
+				{ // [WHITE][PAWNS][EG][SQ]
 					 0,  0,  0,  0,  0,  0,  0,  0,
 					30, 35, 45, 50, 50, 45, 35, 30,
 					15, 20, 25, 30, 30, 25, 20, 15,
 					 6,  8, 10, 15, 15, 10,  8,  6,
-					 3,  5,  5, 10, 10,  5,  3,  3,
+					 3,  5,  5, 10, 10,  5,  5,  3,
 					 0,  3,  3,  6,  6,  3,  3,  0,
 					-3,  0,  0,  3,  3,  0,  0, -3,
 					 0,  0,  0,  0,  0,  0,  0,  0
 				}
 		    },
 			{
-				{ // [KNIGHTS][MG][]
+				{ // [WHITE][KNIGHTS][MG][SQ]
 					-40,-30,-20,-20,-20,-20,-30,-40,
 					-20,-10,  0,  0,  0,  0,-10,-20,
 					-10,  0, 10, 15, 15, 10,  0,-10,
@@ -140,7 +168,7 @@ namespace eval
 					-20,-10,  0,  0,  0,  0,-10,-20,
 					-40,-30,-20,-20,-20,-20,-30,-40
 				},
-				{ // [KNIGHTS][EG][]
+				{ // [WHITE][KNIGHTS][EG][SQ]
 					-40,-30,-20,-20,-20,-20,-30,-40,
 					-20,-10,  0,  0,  0,  0,-10,-20,
 					-10,  0, 10, 15, 15, 10,  0,-10,
@@ -152,7 +180,7 @@ namespace eval
 				}
 			},
 			{
-				{ // [BISHOPS][MG][]
+				{ // [WHITE][BISHOPS][MG][SQ]
 					-10,-10, -5, -5, -5, -5,-10,-10,
 					-10,  0,  0,  0,  0,  0,  0,-10,
 					 -5,  0,  5,  5,  5,  5,  0, -5,
@@ -162,7 +190,7 @@ namespace eval
 					-10,  3,  0,  0,  0,  0,  3,-10,
 					-20,-20,-15,-15,-15,-15,-20,-20
 				},
-				{ // [BISHOPS][EG][]
+				{ // [WHITE][BISHOPS][EG][SQ]
 					-20,-15,-10, -5, -5,-10,-15,-20,
 					-15,  0,  0,  0,  0,  0,  0,-15,
 					-10,  0,  5,  5,  5,  5,  0,-10,
@@ -174,7 +202,7 @@ namespace eval
 				}
 			},
 			{
-				{ // [ROOKS][MG][]
+				{ // [WHITE][ROOKS][MG][SQ]
 					-8, -5,  0,  5,  5,  0, -5, -8,
 					-8, -5,  0,  5,  5,  0, -5, -8,
 					-8, -5,  0,  5,  5,  0, -5, -8,
@@ -184,19 +212,19 @@ namespace eval
 					-8, -5,  0,  5,  5,  0, -5, -8,
 					-8, -5,  0,  5,  5,  0, -5, -8
 				},
-				{ // [ROOKS][EG][]
-					0,  0,  0,  0,  0,  0,  0,  0,
-					0,  0,  0,  0,  0,  0,  0,  0,
-					0,  0,  0,  0,  0,  0,  0,  0,
-					0,  0,  0,  0,  0,  0,  0,  0,
-					0,  0,  0,  0,  0,  0,  0,  0,
-					0,  0,  0,  0,  0,  0,  0,  0,
-					0,  0,  0,  0,  0,  0,  0,  0,
-					0,  0,  0,  0,  0,  0,  0,  0,
+				{ // [WHITE][ROOKS][EG][SQ]
+					 0,  0,  0,  0,  0,  0,  0,  0,
+					 0,  0,  0,  0,  0,  0,  0,  0,
+					 0,  0,  0,  0,  0,  0,  0,  0,
+					 0,  0,  0,  0,  0,  0,  0,  0,
+					 0,  0,  0,  0,  0,  0,  0,  0,
+					 0,  0,  0,  0,  0,  0,  0,  0,
+					 0,  0,  0,  0,  0,  0,  0,  0,
+					 0,  0,  0,  0,  0,  0,  0,  0,
 				}
 			},
 			{
-				{ // [QUEENS][MG][]
+				{ // [WHITE][QUEENS][MG][SQ]
 					-15,-10,-10, -5, -5,-10,-10,-15,
 					-10,  0,  0,  0,  0,  0,  0,-10,
 					-10,  0,  5,  5,  5,  5,  0,-10,
@@ -206,7 +234,7 @@ namespace eval
 					-10,  0,  0,  0,  0,  0,  0,-10,
 					-15,-10,-10, -5, -5,-10,-10,-15
 				},
-				{ // [QUEENS][EG][]
+				{ // [WHITE][QUEENS][EG][SQ]
 					-5, -5, -5, -5, -5, -5, -5, -5,
 					-5,  0,  0,  0,  0,  0,  0, -5,
 					-5,  0,  5,  5,  5,  5,  0, -5,
@@ -218,7 +246,7 @@ namespace eval
 				}
 			},
 			{
-				{ // [KINGS][MG][]
+				{ // [WHITE][KINGS][MG][SQ]
 					-20,-10,-30,-50,-50,-30,-10,-20,
 					-10,  0,-20,-40,-40,-20,  0,-10,
 					 -5,  5,-15,-35,-35,-15,  5, -5,
@@ -228,7 +256,7 @@ namespace eval
 					 30, 40, 20,  0,  0, 20, 40, 30,
 					 35, 45, 25,  5,  5, 25, 45, 35
 				},
-				{  // [KINGS][EG][]
+				{  // [WHITE][KINGS][EG][SQ]
 					-70,-50,-40,-30,-30,-40,-50,-70,
 					-50,-20,-10, -5, -5,-10,-20,-50,
 					-40,-10,  0, 20, 20,  0,-10,-40,

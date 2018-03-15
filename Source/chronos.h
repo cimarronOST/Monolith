@@ -1,5 +1,5 @@
 /*
-  Monolith 0.3  Copyright (C) 2017 Jonas Mayr
+  Monolith 0.4  Copyright (C) 2017 Jonas Mayr
 
   This file is part of Monolith.
 
@@ -24,22 +24,21 @@
 
 #include "main.h"
 
-// calculating the time per move
+// allocating the searchtime
 
-class chronos
+class chronomanager
 {
 public:
 
-	chronos() : time{ 0 }, incr{ 0 }, moves_to_go{ 50 } { }
+	chronomanager() : time{ }, incr{ }, moves_to_go{ 50 }, movetime{ lim::movetime }, infinite{ true } { }
 
 	int time[2];
 	int incr[2];
 	int moves_to_go;
-
 	uint64 movetime;
+	bool infinite;
 
 	uint64 get_movetime(int turn);
-	void set_movetime(uint64 new_time);
 };
 
 // internal clock
@@ -54,6 +53,10 @@ public:
 
 	chronometer() { start(); }
 
+	int hits{ };
+	uint64 max{ };
+	uint64 elapsed{ };
+
 	void start();
-	uint64 elapsed() const;
+	uint64 split();
 };

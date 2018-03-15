@@ -1,5 +1,5 @@
 /*
-  Monolith 0.3  Copyright (C) 2017 Jonas Mayr
+  Monolith 0.4  Copyright (C) 2017 Jonas Mayr
 
   This file is part of Monolith.
 
@@ -23,49 +23,65 @@
 #include <nmmintrin.h>
 #endif
 
-#include "bitboard.h"
+#include "bit.h"
+
+// side-independently shifting a bitboard
+
+uint64 bit::shift(uint64 b, int shift)
+{
+	return (b << shift) | (b >> (64 - shift));
+}
+
+void bit::real_shift(uint64 &b, int shift)
+{
+	b = bit::shift(b, shift);
+}
+
+// calculating the population count
 
 #if defined(POPCNT) && defined(_MSC_VER)
-	int bb::popcnt(uint64 board)
+	int bit::popcnt(uint64 b)
 	{
-		return static_cast<int>(_mm_popcnt_u64(board));
+		return static_cast<int>(_mm_popcnt_u64(b));
 	}
 
 #elif defined(POPCNT) && defined(__GNUC__)
-	int bb::popcnt(uint64 board)
+	int bit::popcnt(uint64 b)
 	{
-		return __builtin_popcountll(board);
+		return __builtin_popcountll(b);
 	}
 
 #else
-	int bb::popcnt(uint64 board)
+	int bit::popcnt(uint64 b)
 	{
-		board = board - ((board >> 1) & 0x5555555555555555);
-		board = (board & 0x3333333333333333) + ((board >> 2) & 0x3333333333333333);
-		board = (board + (board >> 4)) & 0x0f0f0f0f0f0f0f0f;
-		board = (board * 0x0101010101010101) >> 56;
-		return static_cast<int>(board);
+		b = b - ((b >> 1) & 0x5555555555555555);
+		b = (b & 0x3333333333333333) + ((b >> 2) & 0x3333333333333333);
+		b = (b + (b >> 4)) & 0x0f0f0f0f0f0f0f0f;
+		b = (b * 0x0101010101010101) >> 56;
+		return static_cast<int>(b);
 	}
 #endif
+
+// finding the least significant bit
 
 #if defined(POPCNT) && defined(_MSC_VER)
 	namespace
 	{
-		unsigned long LSB, *ptr{ &LSB };
+		unsigned long least_bit, *this_bit{ &least_bit };
 	}
 
-	unsigned long bb::bitscan(uint64 board)
+	unsigned long bit::scan(uint64 b)
 	{
-		assert(board != 0ULL);
-		_BitScanForward64(ptr, board);
-		return LSB;
+		assert(b);
+		_BitScanForward64(this_bit, b);
+		return least_bit;
 	}
 
 #elif defined(POPCNT) && defined(__GNUC__)
-	unsigned long bb::bitscan(uint64 board)
+	unsigned long bit::scan(uint64 b)
 	{
-		assert(board != 0ULL);
-		return __builtin_ctzll(board);
+		assert(b);
+		return __builtin_ctzll(b);
 	}
 
 #else
@@ -84,9 +100,9 @@
 		};
 	}
 
-	unsigned long bb::bitscan(uint64 board)
+	unsigned long bit::scan(uint64 b)
 	{
-		assert(board != 0ULL);
-		return index[((board & (-1 * board)) * 0x02450fcbd59dc6d3) >> 58];
+		assert(b);
+		return index[((b & (-1 * b)) * 0x02450fcbd59dc6d3) >> 58];
 	}
 #endif

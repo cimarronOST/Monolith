@@ -1,5 +1,5 @@
 /*
-  Monolith 0.3  Copyright (C) 2017 Jonas Mayr
+  Monolith 0.4  Copyright (C) 2017 Jonas Mayr
 
   This file is part of Monolith.
 
@@ -27,12 +27,10 @@
 
 namespace see
 {
-	const int exact_value[8]
-	{
-		100, 320, 320, 500, 950, 10000, 100, 0
-	};
+	int eval(const board &pos, uint32 move);
 
-	int eval(const pos &board, uint32 move);
+	// fixed independend piece values
 
-	uint64 lvp(const pos &board, const uint64 &set, int col, int &piece);
+	const int value[]
+	{ 100, 325, 325, 500, 950, 10000, 100, 0 };
 }

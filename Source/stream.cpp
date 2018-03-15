@@ -1,5 +1,5 @@
 /*
-  Monolith 0.3  Copyright (C) 2017 Jonas Mayr
+  Monolith 0.4  Copyright (C) 2017 Jonas Mayr
 
   This file is part of Monolith.
 
@@ -22,27 +22,29 @@
 #include <unistd.h>
 #endif
 
-#include "logfile.h"
+#include "stream.h"
+
+// streambuffer manipulation
 
 std::ofstream sync_log::fout;
 syncbuf sync_log::sbuf(sync_log::fout.rdbuf(), std::cout.rdbuf());
 
 std::ostream sync_log::cout(&sbuf);
 
-namespace
-{
-	std::string fullpath;
-	const std::string log_name{ "monolith logfile.txt" };
-}
+// log file path details
 
-void log_file::set_path(char *argv[])
+std::string filestream::fullpath;
+const std::string filestream::name{ "monolith logfile.txt" };
+
+void filestream::set_path(char *argv[])
 {
 	// retrieving the full path of the directory of the binary file
 
 #if defined(_WIN32)
 
-	char path[255] = "";
-	_fullpath(path, argv[0], sizeof(path));
+	char path[255]{ };
+	auto buf{ _fullpath(path, argv[0], sizeof(path)) };
+	assert(buf != NULL);
 
 	fullpath = path;
 	fullpath.erase(fullpath.find_last_of("\\") + 1, fullpath.size());
@@ -55,13 +57,9 @@ void log_file::set_path(char *argv[])
 #endif
 }
 
-std::string log_file::get_path()
+bool filestream::open()
 {
-	return fullpath;
-}
-
-bool log_file::open()
-{
+	// opening the log file, or keeping it close if the LOG switch is not set
 
 #ifndef LOG
 
@@ -72,17 +70,13 @@ bool log_file::open()
 #endif
 
 	if (sync_log::fout.is_open())
-	{
 		return true;
-	}
 	else
 	{
 		// trying to open the logfile
 
-		std::string path{ get_path() + log_name };
-
 		sync_log::fout.clear();
-		sync_log::fout.open(path);
+		sync_log::fout.open(fullpath + name);
 
 		if (sync_log::fout.is_open())
 			return true;

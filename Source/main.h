@@ -1,5 +1,5 @@
 /*
-  Monolith 0.3  Copyright (C) 2017 Jonas Mayr
+  Monolith 0.4  Copyright (C) 2017 Jonas Mayr
 
   This file is part of Monolith.
 
@@ -20,36 +20,31 @@
 
 #pragma once
 
-// debugging controls
+// debug switches
 
 #define POPCNT
 #define NDEBUG
-#define NTEST
+#define NDEBUG_EXP
 #define NLOG
 
-// libraries
+// global libraries
 
 #include <iostream>
 #include <string>
+#include <algorithm>
 #include <cassert>
 
-// debugging controls
+// defining runtime-expensive assertions
 
-#if defined(TEST)
-#define ASSERT assert
+#if defined(DEBUG_EXP)
+#define assert_exp(x) assert(x)
 #else
-#define ASSERT(x) ((void)0)
-#endif
-
-#if defined(LOG)
-#define log sync_log
-#else
-#define log std
+#define assert_exp(x) ((void)0)
 #endif
 
 // global enumerators
 
-enum SQUARE_INDEX
+enum square_index
 {
 	H1, G1, F1, E1, D1, C1, B1, A1,
 	H2, G2, F2, E2, D2, C2, B2, A2,
@@ -61,17 +56,17 @@ enum SQUARE_INDEX
 	H8, G8, F8, E8, D8, C8, B8, A8
 };
 
-enum FILE_INDEX
+enum file_index
 {
 	H, G, F, E, D, C, B, A
 };
 
-enum RANK_INDEX
+enum rank_index
 {
 	R1, R2, R3, R4, R5, R6, R7, R8
 };
 
-enum PIECE
+enum piece_index
 {
 	PAWNS = 0,
 	KNIGHTS = 1,
@@ -82,85 +77,91 @@ enum PIECE
 	NONE = 7
 };
 
-enum PAWN_MOVE
+enum pawn_move_index
 {
-	DOUBLEPUSH = 5,
-	ENPASSANT = 6
+	DOUBLEPUSH = 8,
+	ENPASSANT = 9
 };
 
-enum CASTLING
+enum castling
 {
-	WHITE_SHORT = 8,
-	BLACK_SHORT = 9,
-	WHITE_LONG = 10,
-	BLACK_LONG = 11
+	SHORT = 10,
+	LONG = 11
 };
 
-enum PROMO
+enum castling_square
 {
+	PROHIBITED = 64
+};
+
+enum promo_mode
+{
+	PROMO_ALL = 12,
 	PROMO_KNIGHT = 12,
 	PROMO_BISHOP = 13,
 	PROMO_ROOK = 14,
 	PROMO_QUEEN = 15
 };
 
-enum SLIDER
+enum eval_index
 {
-	ROOK,
-	BISHOP
+	MATERIAL = 6,
+	MOBILITY = 7,
+	PASSED = 8
 };
 
-enum SIDE
+enum sliding_type
+{
+	ROOK,
+	BISHOP,
+	QUEEN
+};
+
+enum side_index
 {
 	WHITE,
 	BLACK,
 	BOTH
 };
 
-enum GEN_MODE
+enum gen_mode
 {
 	PSEUDO,
 	LEGAL
 };
 
-enum GEN_STAGE
+enum gen_stage
 {
-	CAPTURE,
-	QUIET,
-	TACTICAL,
-	WINNING,
-	LOOSING,
 	HASH,
-	ALL,
+	WINNING,
+	KILLER,
+	QUIET,
+	LOOSING,
+	TACTICAL,
+	CHECK,
+	EVASION
 };
 
-enum GAME_STAGE
+enum game_stage
 {
 	MG,
 	EG
 };
 
-enum CASTLING_RIGHT
+enum score_type
 {
-	WS,
-	BS,
-	WL,
-	BL
+	NO_SCORE  = -30000,
+	MIN_SCORE = -20000,
+	MAX_SCORE =  20000,
+	MATE_SCORE = 18951,
 };
 
-enum SCORE
-{
-	NO_SCORE = 20000,
-	MAX_SCORE = 10000,
-	MATE_SCORE = 9000,
-};
-
-enum MOVE
+enum move_type
 {
 	NO_MOVE
 };
 
-enum HASH
+enum bound_type
 {
 	EXACT = 1,
 	UPPER = 2,
@@ -172,22 +173,11 @@ enum HASH
 typedef unsigned long long uint64;
 typedef unsigned int uint32;
 typedef unsigned short uint16;
-typedef signed short int16;
 typedef unsigned char uint8;
 
-struct move_detail
-{
-	int sq1;
-	int sq2;
-	int piece;
-	int victim;
-	int turn;
-	uint8 flag;
-};
+typedef signed short int16;
 
-// global constants
-
-const std::string version{ "0.3" };
+// limiting constants
 
 namespace lim
 {
@@ -196,122 +186,45 @@ namespace lim
 
 	const int depth{ 128 };
 
-	const int period{ 1024 };
-	const int movegen{ 256 };
+	const int period{ depth + 128 };
+	const int moves{ 256 };
+	const int multipv{ moves };
 
 	const int hash{ 4096 };
-	const int min_cont{ -100 };
-	const int max_cont{  100 };
+	const int overhead{ 1000 };
+	const int min_contempt{ -100 };
+	const int max_contempt{  100 };
 }
 
-const uint64 file[]
-{
-	0x0101010101010101,
-	0x0202020202020202,
-	0x0404040404040404,
-	0x0808080808080808,
-	0x1010101010101010,
-	0x2020202020202020,
-	0x4040404040404040,
-	0x8080808080808080
-};
+// relativating white's perspective
 
-const uint64 rank[]
+namespace relative
 {
-	0xffULL,
-	0xffULL << 8,
-	0xffULL << 16,
-	0xffULL << 24,
-	0xffULL << 32,
-	0xffULL << 40,
-	0xffULL << 48,
-	0xffULL << 56
-};
-
-namespace postfix
-{
-	const std::string promo[]{ "n", "b", "r", "q" };
+	inline int rank(int rank, int turn)
+	{
+		return turn == WHITE ? rank : 7 - rank;
+	}
 }
 
-// global functions
+// square functions
 
-inline uint64 shift(uint64 bb, int shift)
+namespace square
 {
-	return (bb << shift) | (bb >> (64 - shift));
-}
+	const uint64 white{ 0xaa55aa55aa55aa55 };
+	const uint64 black{ 0x55aa55aa55aa55aa };
 
-inline int to_sq1(uint32 move)
-{
-	return move & 0x3f;
-}
+	inline int file(int sq)
+	{
+		return sq & 7;
+	}
 
-inline int to_sq2(uint32 move)
-{
-	return (move >> 6) & 0x3f;
-}
+	inline int rank(int sq)
+	{
+		return sq >> 3;
+	}
 
-inline uint8 to_flag(uint32 move)
-{
-	return static_cast<uint8>((move >> 12) & 0xf);
-}
-
-inline int to_piece(uint32 move)
-{
-	return (move >> 16) & 0x7;
-}
-
-inline int to_victim(uint32 move)
-{
-	return (move >> 19) & 0x7;
-}
-
-inline int to_turn(uint32 move)
-{
-	assert(move >> 23 == 0);
-	return move >> 22;
-}
-
-inline std::string to_promo(uint8 flag)
-{
-	assert(flag > 0 && flag < 16);
-	return flag >= 12 ? postfix::promo[flag - 12] : "";
-}
-
-inline int to_idx(const std::string &sq)
-{
-	assert(sq.size() == 2);
-	return 'h' - sq.front() + ((sq.back() - '1') << 3);
-}
-
-inline uint64 to_bb(const std::string sq)
-{
-	return 1ULL << to_idx(sq);
-}
-
-inline std::string to_str(const int sq)
-{
-	std::string str;
-	str += 'h' - static_cast<char>(sq & 7);
-	str += '1' + static_cast<char>(sq >> 3);
-
-	return str;
-}
-
-inline uint32 encode(uint32 sq1, uint32 sq2, int flag, int piece, int victim, int turn)
-{
-	assert(turn == (turn & 1));
-	assert(piece <= 5);
-	assert(victim <= 4 || victim == 7);
-
-	return sq1 | (sq2 << 6) | (flag << 12) | (piece << 16) | (victim << 19) | (turn << 22);
-}
-
-inline move_detail decode(uint32 move)
-{
-	return{ to_sq1(move), to_sq2(move), to_piece(move), to_victim(move), to_turn(move), to_flag(move) };
-}
-
-inline std::string algebraic(uint32 move)
-{
-	return to_str(to_sq1(move)) + to_str(to_sq2(move)) + to_promo(to_flag(move));
+	inline int distance(int sq1, int sq2)
+	{
+		return std::max(abs(file(sq1) - file(sq2)), abs(rank(sq1) - rank(sq2)));
+	}
 }

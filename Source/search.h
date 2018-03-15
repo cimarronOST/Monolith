@@ -1,5 +1,5 @@
 /*
-  Monolith 0.3  Copyright (C) 2017 Jonas Mayr
+  Monolith 0.4  Copyright (C) 2017 Jonas Mayr
 
   This file is part of Monolith.
 
@@ -20,10 +20,11 @@
 
 #pragma once
 
+#include <vector>
+
+#include "stream.h"
 #include "movepick.h"
-#include "movegen.h"
 #include "position.h"
-#include "chronos.h"
 #include "main.h"
 
 // analysis functions for debugging
@@ -31,22 +32,59 @@
 namespace analysis
 {
 	void reset();
-	void summary(chronometer &time);
+	void summary();
 
-	void root_perft(pos &board, int depth, const GEN_MODE mode);
-	uint64 perft(pos &board, int depth, const GEN_MODE mode);
+	// doing a move-generator performance and correctness test
+
+	void root_perft(board &pos, int depth, const gen_mode mode);
+	uint64 perft(board &pos, int depth, const gen_mode mode);
 }
 
 // actual search
 
 namespace search
 {
-	uint32 id_frame(pos &board, chronos &chrono, uint32 &ponder);
+	// uncluttering things with the search stack
 
-	int root_alphabeta(pos &board, movepick &pick, uint32 pv[], int ply);
-	int alphabeta(pos &board, int ply, int depth, int alpha, int beta);
+	struct search_stack
+	{
+		int depth;
+		uint32 move;
+		struct tt_stack
+		{
+			uint32 move;
+			int score;
+			int bound;
+		} tt;
+		struct null_copy
+		{
+			uint64 ep;
+			uint16 capture;
+		} copy;
+		bool no_pruning;
+	};
 
-	int qsearch(pos &board, int alpha, int beta);
+	void init_stack(search_stack *stack);
 
-	void stop_ponder();
+	// bundling the principal varition
+
+	struct variation
+	{
+		uint32 move[lim::depth];
+		int mindepth;
+		int maxdepth;
+		int seldepth;
+		int score;
+	};
+
+	void init_multipv(std::vector<variation> &multipv);
+
+	// search functions hierarchy
+
+	uint32 id_frame(board &pos, uint64 &movetime, uint32 &ponder);
+
+	int aspiration(board &pos, search_stack *stack, movepick_root &pick, variation &pv, int depth, int multipv);
+	int root_alphabeta(board &pos, search_stack *stack, movepick_root &pick, variation &pv, int depth, int multipv, int alpha, int beta);
+	int alphabeta(board &pos, search_stack *stack, int depth, int alpha, int beta);
+	int   qsearch(board &pos, search_stack *stack, int depth, int alpha, int beta);
 };

@@ -1,5 +1,5 @@
 /*
-  Monolith 0.3  Copyright (C) 2017 Jonas Mayr
+  Monolith 0.4  Copyright (C) 2017 Jonas Mayr
 
   This file is part of Monolith.
 
@@ -18,40 +18,36 @@
 */
 
 
+#include "movegen.h"
+#include "chronos.h"
+#include "move.h"
+#include "notation.h"
 #include "attack.h"
 #include "see.h"
-#include "bitboard.h"
-#include "logfile.h"
-#include "evaluation.h"
-#include "hash.h"
+#include "trans.h"
+#include "eval.h"
 #include "engine.h"
 #include "search.h"
 
 namespace
 {
-	// effective branching factor
-
-	struct ebf_result
+	struct node_count
 	{
-		uint64 all_n;
-		uint64 final_n;
-		uint64 prev_n;
-		double factor;
-		int cnt;
-	} ebf;
+		uint64 cnt{ };
+		uint64 fail_high{ };
+		uint64 fail_high_1st{ };
+		uint64 total{ };
+		uint64 qs{ };
+	} nodes;
 
-	// managing time
+	uint64 searchtime{ };
+}
 
-	struct time_management
+namespace position
+{
+	bool legal(board &pos)
 	{
-		int call_cnt{ 0 };
-		uint64 max;
-		chronometer manage;
-	} mean_time;
-
-	bool is_legal(pos &board)
-	{
-		return attack::check(board, board.not_turn, board.pieces[KINGS] & board.side[board.not_turn]) != 0ULL;
+		return attack::check(pos, pos.xturn, pos.pieces[KINGS] & pos.side[pos.xturn]);
 	}
 }
 
@@ -59,806 +55,962 @@ namespace
 
 void analysis::reset()
 {
-	ebf.prev_n = 0;
-	ebf.all_n = 0;
-	ebf.final_n = 0;
-	ebf.factor = 0;
-	ebf.cnt = 0;
+	trans::hash_hits = 0;
+	searchtime = 0ULL;
+
+	nodes.fail_high = 0;
+	nodes.fail_high_1st = 0;
+	nodes.total = 0;
+	nodes.qs = 0;
 }
 
-void analysis::summary(chronometer &time)
+void analysis::summary()
 {
-	auto interim{ time.elapsed() };
-	ebf.factor /= (ebf.cnt != 0 ? ebf.cnt : 1);
-
-	log::cout.precision(3);
-	log::cout << std::fixed
-		<< "=======================================\n\n"
-		<< "time  : " << interim << " ms\n"
-		<< "nodes : " << ebf.final_n << "\n"
-		<< "nps   : " << ebf.final_n / interim / 1000.0 << "M\n"
-		<< "ebf   : " << ebf.factor << "\n"
+	sync::cout.precision(1);
+	sync::cout << std::fixed
+		<< "time            : " << searchtime << " ms\n"
+		<< "nodes           : " << nodes.total << "\n"
+		<< "nps             : " << nodes.total / std::max(searchtime, 1ULL) << " kN/s"
 		<< std::endl;
+
+	if (nodes.total > 0)
+	{
+		sync::cout
+			<< "hash hits       : " << trans::hash_hits * 1000 / nodes.total / 10.0 << " %\n"
+			<< "qs nodes        : " << nodes.qs * 1000 / nodes.total / 10.0 << " %"
+			<< std::endl;
+	}
+	if (nodes.fail_high > 0)
+	{
+		sync::cout
+			<< "cutoff 1st move : " << nodes.fail_high_1st * 1000 / nodes.fail_high / 10.0 << " %"
+			<< std::endl;
+	}
 }
 
-void analysis::root_perft(pos &board, int depth, const GEN_MODE mode)
+void analysis::root_perft(board &pos, int depth, const gen_mode mode)
 {
+	// starting the movegen performance test
+
 	assert(depth >= 1 && depth <= lim::depth);
 	assert(mode == LEGAL || mode == PSEUDO);
 
-	mean_time.manage.start();
-	ebf.final_n += ebf.all_n;
-	ebf.all_n = 0;
+	chronometer chrono;
+	nodes.cnt = 0;
+	sync::cout.precision(3);
 
-	for (int d{ 1 }; d <= depth; ++d)
+	for (auto d{ 1 }; d <= depth; ++d)
 	{
-		log::cout << "perft " << d << ": ";
+		sync::cout << "perft " << d << ": ";
 
-		uint64 nodes{ perft(board, d, mode) };
-		auto interim{ mean_time.manage.elapsed() };
+		auto new_nodes{ perft(pos, d, mode) };
+		chrono.split();
+		nodes.cnt += new_nodes;
 
-		ebf.all_n += nodes;
-
-		log::cout.precision(3);
-		log::cout << nodes
-			<< " time " << interim
-			<< " nps " << std::fixed << ebf.all_n / (interim + 1) / 1000.0 << "M" << std::endl;
+		sync::cout << new_nodes
+			<< " time " << chrono.elapsed
+			<< " nps " << std::fixed << nodes.cnt / std::max(chrono.elapsed, 1ULL) << " kN/s"
+			<< std::endl;
 	}
+	nodes.total += nodes.cnt;
+	searchtime += chrono.split();
 }
 
-uint64 analysis::perft(pos &board, int depth, const GEN_MODE mode)
+uint64 analysis::perft(board &pos, int depth, const gen_mode mode)
 {
-	uint64 nodes{ 0 };
-
 	if (depth == 0) return 1;
 
-	movegen list(board, mode);
-	list.gen_tactical(), list.gen_quiet();
+	uint64 new_nodes{};
+	gen list(pos, mode);
+	list.gen_all();
+	board saved(pos);
 
-	pos saved(board);
-
-	for (int i{ 0 }; i < list.cnt.moves; ++i)
+	for (auto i{ 0 }; i < list.cnt.moves; ++i)
 	{
-		assert(list.is_pseudolegal(list.movelist[i]));
+		assert_exp(pos.pseudolegal(list.move[i]));
 
-		board.new_move(list.movelist[i]);
+		pos.new_move(list.move[i]);
+		assert_exp(mode == PSEUDO || position::legal(pos));
 
-		if (mode == LEGAL) assert(is_legal(board));
-		if (mode == PSEUDO && !is_legal(board))
+		if (mode == PSEUDO && !position::legal(pos))
 		{
-			board = saved;
+			pos.revert(saved);
 			continue;
 		}
-
-		nodes += perft(board, depth - 1, mode);
-		board = saved;
+		new_nodes += perft(pos, depth - 1, mode);
+		pos.revert(saved);
 	}
-
-	return nodes;
+	return new_nodes;
 }
 
 // actual search
 
 namespace
 {
-	uint32 pv_evol[lim::depth][lim::depth];
+	// triangular pv table & position hash table & time management
 
-	uint64 hashlist[lim::period];
-	bool no_pruning[lim::depth]{ false };
+	struct evolving_pv{ uint32 pv[lim::depth][lim::depth]{ }; } evolving;
+	uint64 hash[256 + lim::depth]{ };
+	chronometer chrono;
 
-	int contempt[]{ 0, 0 };
+	// move ordering tables
 
-	// move ordering variables
+	sort::kill_list killer{ };
+	sort::hist_list history{ };
 
-	sort:: killer_list killer{ };
-	sort::history_list history{ };
-	const uint64 max_history{ 1ULL << 63 };
+	uint32 counter_move[6][64]{ };
+}
 
-	uint64 root_nodes[lim::movegen]{ 0 };
-	uint64 nodes{ 0 };
-
-	// helping functions
-
-	bool stop_thread()
+namespace init
+{
+	void search()
 	{
-		if (++mean_time.call_cnt < 256)
-			return false;
+		// resetting search parameters
 
-		mean_time.call_cnt = 0;
-		if (engine::infinite) return false;
+		nodes.cnt = 0;
+		for (auto i{ 0 }; i <= engine::move_offset; ++i)
+			hash[i] = engine::quiet_hash[i];
 
-		if (nodes >= engine::nodes) return true;
-
-		return mean_time.manage.elapsed() >= mean_time.max;
+		for (auto &i : evolving.pv) for (auto &j : i) j = NO_MOVE;
+		for (auto &i : counter_move) for (auto &j : i) j = NO_MOVE;
+		for (auto &i : killer.list) for (auto &j : i) j = NO_MOVE;
+		for (auto &i : history.list) for (auto &j : i) for (auto &k : j) k = 1000ULL;
 	}
+}
 
-	bool is_check(pos &board)
-	{
-		return attack::check(board, board.turn, board.pieces[KINGS] & board.side[board.turn]) == 0ULL;
-	}
-
-	bool is_mate(int score)
+namespace score
+{
+	bool mate(int score)
 	{
 		return abs(score) > MATE_SCORE;
 	}
 
-	bool is_promo(uint32 move)
+	bool mate_limit(int score)
 	{
-		static_assert(PROMO_QUEEN  == 15, "promo encoding");
-		static_assert(PROMO_KNIGHT == 12, "promo encoding");
-
-		return to_flag(move) >= 12;
+		return MAX_SCORE - score <= engine::limit.mate * 2;
 	}
 
-	bool is_quiet(uint32 move)
+	bool refineable(int score, int hash_score, int bound)
 	{
-		return to_victim(move) == NONE && !is_promo(move);
+		return hash_score != NO_SCORE
+			&& (bound == EXACT || (bound == LOWER && hash_score > score) || (bound == UPPER && hash_score < score));
+	}
+}
+
+namespace move
+{
+	bool is_killer(uint32 move, uint32 counter, int curr_depth)
+	{
+		return move == killer.list[curr_depth][0]
+			|| move == killer.list[curr_depth][1]
+			|| move == counter;
 	}
 
-	bool is_killer(uint32 move, int depth)
+	bool extend(uint32 move, bool gives_check, bool pv_node, int depth, const board &pos)
 	{
-		return move == killer.list[depth][0] || move == killer.list[depth][1];
+		return (gives_check && (pv_node || depth <= 4))
+			|| (pv_node && pos.recapture(move))
+			|| (pv_node && move::is_push_to_7th(move));
+	}
+}
+
+namespace pv
+{
+	int get_seldepth(uint32 pv_move[], int seldepth, int depth)
+	{
+		// retrieving the selective depth
+
+		auto d{ depth };
+		while (d < lim::depth - 1 && pv_move[d] != NO_MOVE)
+			d += 1;
+		return std::max(seldepth, d);
 	}
 
-	bool is_pawn_to_7th(uint32 move)
+	void prune(search::variation &pv, board pos)
 	{
-		return to_piece(move) == PAWNS && ((1ULL << to_sq2(move)) & (rank[R2] | rank[R7]));
-	}
+		// pruning wrong principal variation entries
 
-	void currmove(int ply, uint32 move, int move_nr)
-	{
-		auto interim{ mean_time.manage.elapsed() };
-
-		if ((interim > 1000 && move_nr <= 3) || interim > 5000)
+		for (pv.maxdepth = 0; pv.maxdepth < lim::depth && pv.move[pv.maxdepth] != NO_MOVE; pv.maxdepth += 1)
 		{
-			std::cout << "info depth " << ply
-				<< " currmove " << algebraic(move)
-				<< " currmovenumber " << move_nr
-				<< " time " << interim
-				<< " nps " << nodes * 1000 / interim 
+			if (!pos.pseudolegal(pv.move[pv.maxdepth]))
+				break;
+
+			pos.new_move(pv.move[pv.maxdepth]);
+			if (!position::legal(pos))
+				break;	
+		}
+		for (auto d{ pv.maxdepth }; d < lim::depth && pv.move[d] != NO_MOVE; pv.move[d++] = NO_MOVE);
+	}
+
+	void store(search::variation &pv, board pos)
+	{
+		// storign the principal variation in the transposition table
+
+		assert(pv.score != NO_SCORE);
+		auto score{ pv.score };
+
+		for (auto d{ 0 }; d < lim::depth && pv.move[d] != NO_MOVE; ++d, score = -score)
+		{
+			assert(pv.maxdepth - d > 0);
+
+			trans::store(pos, pv.move[d], score, EXACT, 0, d);
+			pos.new_move(pv.move[d]);
+			assert(position::legal(pos));
+		}
+	}
+
+	void rearrange(std::vector<search::variation> &pv)
+	{
+		// sorting multi principal variations
+
+		std::stable_sort(pv.begin(), pv.end(), [&](search::variation a, search::variation b) { return a.score > b.score; });
+	}
+}
+
+namespace null
+{
+	void make_move(board &pos, search::search_stack *stack)
+	{
+		stack->copy.ep = 0ULL;
+		stack->copy.capture = 0;
+		pos.null_move(stack->copy.ep, stack->copy.capture);
+		(stack + 1)->no_pruning = true;
+	}
+
+	void revert_move(board &pos, search::search_stack *stack)
+	{
+		pos.revert_null_move(stack->copy.ep, stack->copy.capture);
+		(stack + 1)->no_pruning = false;
+	}
+}
+
+namespace output
+{
+	// outputting search information
+
+	std::string score(int score)
+	{
+		return score::mate(score)
+			? "mate " + std::to_string((score > MATE_SCORE ? MAX_SCORE + 1 - score : MIN_SCORE - 1 - score) / 2)
+			: "cp " + std::to_string(score);
+	}
+
+	std::string show_multipv(int pv)
+	{
+		if (engine::multipv > 1)
+			return " multipv " + std::to_string(pv);
+		else
+			return "";
+	}
+
+	void variation(uint32 pv_move[])
+	{
+		for (auto d{ 0 }; pv_move[d] != NO_MOVE; ++d)
+			sync::cout << notation::algebraic(pv_move[d]) << " ";
+	}
+
+	void info(std::vector<search::variation> &pv)
+	{
+		if (engine::multipv > 1)
+			pv::rearrange(pv);
+
+		for (auto idx{ 0 }; idx < engine::multipv; ++idx)
+		{
+			sync::cout << "info"
+				<< " depth " << pv[idx].mindepth
+				<< " seldepth " << pv[idx].seldepth
+				<<   show_multipv(idx + 1)
+				<< " score " << score(pv[idx].score)
+				<< " time " << chrono.elapsed
+				<< " nodes " << nodes.cnt
+				<< " nps " << nodes.cnt * 1000 / std::max(chrono.elapsed, 1ULL)
+				<< " hashfull " << trans::hashfull()
+				<< " pv "; variation(pv[idx].move);
+
+			sync::cout << std::endl;
+		}
+	}
+
+	void bound_info(search::variation &pv, int depth, int multipv, int score, int bound)
+	{
+		assert(!score::mate(score));
+		chrono.split();
+
+		sync::cout << "info"
+			<< " depth " << depth
+			<< " seldepth " << pv::get_seldepth(pv.move, pv.seldepth, depth)
+			<<   show_multipv(multipv)
+			<< " score cp " << score
+			<< (bound == UPPER ? " upper" : " lower") << "bound"
+			<< " time " << chrono.elapsed
+			<< " nodes " << nodes.cnt
+			<< " nps " << nodes.cnt * 1000 / std::max(chrono.elapsed, 1ULL)
+			<< std::endl;
+	}
+
+	void currmove(int depth, int multipv, uint32 move, int movenumber)
+	{
+		chrono.split();
+
+		if ((chrono.elapsed > 1000 && movenumber <= 3) || chrono.elapsed > 5000)
+		{
+			std::cout << "info depth " << depth
+				<<   show_multipv(multipv)
+				<< " currmove " << notation::algebraic(move)
+				<< " currmovenumber " << movenumber
+				<< " time " << chrono.elapsed
 				<< std::endl;
 		}
 	}
 
-	// updates during search
+}
 
-	namespace update
+namespace expire
+{
+	// monitoring search expiration
+
+	void start_clock(uint64 movetime)
 	{
-		void killer_moves(uint32 move, int depth)
-		{
-			if (move == killer.list[depth][0] || move == killer.list[depth][1])
-				return;
-
-			killer.list[depth][1] = killer.list[depth][0];
-			killer.list[depth][0] = move;
-		}
-
-		void history_table(const pos &board, uint32 move, int ply)
-		{
-			assert(board.turn == to_turn(move));
-
-			uint64 *entry{ &(history.list[board.turn][to_piece(move)][to_sq2(move)]) };
-			*entry += ply * ply;
-
-			if (*entry > max_history)
-			{
-				for (auto &i : history.list) for (auto &j : i) for (auto &h : j) h >>= 1;
-			}
-		}
-
-		void heuristics(const pos &board, uint32 move, int ply, int depth)
-		{
-			if (is_quiet(move))
-			{
-				history_table(board, move, ply);
-				killer_moves(move, depth);
-			}
-		}
-
-		void temp_pv(int depth, uint32 move)
-		{
-			pv_evol[depth - 1][0] = move;
-			for (int i{ 0 }; pv_evol[depth][i] != NO_MOVE; ++i)
-			{
-				pv_evol[depth - 1][i + 1] = pv_evol[depth][i];
-			}
-		}
-
-		void main_pv(uint32 move, uint32 pv[], int real_nr)
-		{
-			pv[0] = move;
-			for (int i{ 0 }; pv_evol[0][i] != NO_MOVE; ++i)
-			{
-				pv[i + 1] = pv_evol[0][i];
-			}
-
-			root_nodes[real_nr] += nodes;
-		}
+		chrono.hits = 0;
+		chrono.max = movetime;
+		chrono.start();
 	}
 
-	// detecting draws
-
-	namespace draw
+	bool abort(int depth, search::variation &pv, movepick_root &pick)
 	{
-		const uint64 all_sq[]{ 0xaa55aa55aa55aa55, 0x55aa55aa55aa55aa };
+		// checking the criteria for early search abortion
 
-		bool lone_bishops(const pos &board)
-		{
-			return (board.pieces[BISHOPS] | board.pieces[KINGS]) == board.side[BOTH];
-		}
-
-		bool lone_knights(const pos &board)
-		{
-			return (board.pieces[KNIGHTS] | board.pieces[KINGS]) == board.side[BOTH];
-		}
-
-		bool by_repetition(const pos &board, int depth)
-		{
-			int size{ engine::move_cnt + depth - 1 };
-			for (int i{ 4 }; i <= board.half_move_cnt && i <= size; i += 2)
-			{
-				if (hashlist[size - i] == hashlist[size])
-					return true;
-			}
-
+		if (engine::infinite)
 			return false;
-		}
 
-		bool by_material(const pos &board)
-		{
-			if (lone_bishops(board) && (!(all_sq[WHITE] & board.pieces[BISHOPS]) || !(all_sq[BLACK] & board.pieces[BISHOPS])))
-				return true;
+		return (chrono.elapsed > chrono.max / 2)
+			|| (pv.score > MATE_SCORE && chrono.elapsed > chrono.max / 8)
+			|| (depth > 8 && pv.move[depth - 8] == NO_MOVE && chrono.elapsed > chrono.max / 16)
+			|| (pick.single_reply() && chrono.elapsed > chrono.max / 32)
+			|| (engine::limit.mate && score::mate_limit(pv.score));
+	}
 
-			if (lone_knights(board) && bb::popcnt(board.pieces[KNIGHTS]) == 1)
-				return true;
-
+	bool stop_thread()
+	{
+		if (++chrono.hits < 256)
 			return false;
-		}
+		chrono.hits = 0;
+		if (engine::infinite)
+			return false;
+		if (nodes.cnt >= engine::limit.nodes)
+			return true;
 
-		bool verify(const pos &board, int depth)
+		return chrono.split() >= chrono.max;
+	}
+
+	void check()
+	{
+		if (engine::stop || stop_thread())
 		{
-			hashlist[board.move_cnt - 1] = board.key;
-
-			if (board.half_move_cnt >= 4 && by_repetition(board, depth))
-				return true;
-
-			else if (by_material(board))
-				return true;
-
-			else if (board.half_move_cnt == 100)
-				return true;
-
-			else
-				return false;
+			engine::stop = true;
+			throw 1;
 		}
 	}
 }
 
-void search::stop_ponder()
+namespace update
 {
-	mean_time.max += mean_time.manage.elapsed();
+	// updating during search
+
+	void kill_table(uint32 move, int curr_depth)
+	{
+		assert(curr_depth < lim::depth);
+
+		if (move == killer.list[curr_depth][0])
+			return;
+
+		killer.list[curr_depth][1] = killer.list[curr_depth][0];
+		killer.list[curr_depth][0] = move;
+	}
+
+	void hist_table(const board &pos, uint32 move, int depth)
+	{
+		assert(pos.turn == move::turn(move));
+
+		uint64 *entry{ &(history.list[pos.turn][move::piece(move)][move::sq2(move)]) };
+		*entry += depth * depth;
+
+		if (*entry > (1ULL << 63))
+			for (auto &i : history.list) for (auto &j : i) for (auto &h : j) h >>= 2;
+	}
+
+	void heuristics(const board &pos, uint32 move, uint32 &counter, int depth, int curr_depth)
+	{
+		// updating history & killer & counter move if a quiet move failes high
+
+		if (move::is_quiet(move))
+		{
+			hist_table(pos, move, depth);
+			kill_table(move, curr_depth);
+			counter = move;
+		}
+	}
+
+	void evolving_pv(int curr_depth, uint32 move)
+	{
+		// saving the partial pv if a new best move has been found
+
+		evolving.pv[curr_depth - 1][0] = move;
+		for (auto d{ 0 }; evolving.pv[curr_depth][d] != NO_MOVE; ++d)
+			evolving.pv[curr_depth - 1][d + 1] = evolving.pv[curr_depth][d];
+	}
+
+	void main_pv(uint32 move, uint32 pv_move[])
+	{
+		// updating the whole pv if a new best root move has been found
+
+		pv_move[0] = move;
+		for (auto d{ 0 }; evolving.pv[0][d] != NO_MOVE; ++d)
+			pv_move[d + 1] = evolving.pv[0][d];
+	}
 }
 
-uint32 search::id_frame(pos &board, chronos &chrono, uint32 &ponder)
+namespace draw
 {
-	assert(engine::depth >= 1);
-	assert(engine::depth <= lim::depth);
+	// detecting draws independent of the static evaluation
 
-	// initialising variables
-
-	mean_time.call_cnt = 0;
-	mean_time.max = chrono.get_movetime(board.turn);
-	mean_time.manage.start();
-
-	uint32 pv[lim::depth]{ 0 };
-	uint32 best_move{ 0 };
-
-	contempt[board.turn] = -engine::contempt;
-	contempt[board.not_turn] = engine::contempt;
-
-	for (int i{ 0 }; i < engine::move_cnt; ++i)
-		hashlist[i] = engine::hashlist[i];
-
-	// resetting
-
-	ebf.prev_n = 0;
-	ebf.all_n  = 0;
-
-	for (auto &i : pv_evol)      for (auto &p : i) p = NO_MOVE;
-	for (auto &i : killer.list)  for (auto &k : i) k = NO_MOVE;
-	for (auto &i : history.list) for (auto &j : i) for (auto &h : j) h = 1000ULL;
-
-	// generating & weighting root moves
-
-	movepick pick(board, root_nodes);
-
-	nodes = 0;
-	if (pick.list.cnt.moves == 1)
-		return pick.list.movelist[0];
-
-	// iterative deepening loop
-
-	for (int ply{ 1 }; ply <= engine::depth; ++ply)
+	bool repetition(const board &pos, int curr_depth)
 	{
-		// alphabeta search
+		// marking every one-fold-repetition as a draw
 
-		int score{ root_alphabeta(board, pick, pv, ply) };
+		auto size{ engine::move_offset + curr_depth };
 
-		auto interim{ mean_time.manage.elapsed() };
+		assert(hash[size] == pos.key);
+		assert(engine::move_offset + curr_depth <= pos.move_cnt);
 
-		if (pv[0])
+		for (auto i{ 4 }; i <= pos.half_move_cnt && i <= size; i += 2)
 		{
-			// calculating nodes per second
+			if (hash[size - i] == hash[size])
+				return true;
+		}
+		return false;
+	}
 
-			assert(nodes != 0);
-			auto nps{ nodes * 1000 / (interim + 1) };
+	bool verify(const board &pos, int curr_depth)
+	{
+		// detecting draw-by-3-fold-repetition and draw-by-50-move-rule
+
+		hash[engine::move_offset + curr_depth] = pos.key;
+
+		if (pos.half_move_cnt >= 4
+			&& (repetition(pos, curr_depth) || pos.half_move_cnt >= 100))
+			return true;
+		else
+			return false;
+	}
+}
+
+void search::init_stack(search_stack *stack)
+{
+	for (auto d{ 0 }; d <= lim::depth; ++d)
+	{
+		stack[d] = { d, NO_MOVE, {NO_MOVE, NO_SCORE, 0}, {0ULL, 0}, false };
+	}
+}
+
+void search::init_multipv(std::vector<variation> &multipv)
+{
+	for (auto &pv : multipv)
+	{
+		for (auto &m : pv.move) m = NO_MOVE;
+		pv.mindepth = 0;
+		pv.maxdepth = 0;
+		pv.seldepth = 0;
+		pv.score = MIN_SCORE;
+	}
+}
+
+uint32 search::id_frame(board &pos, uint64 &movetime, uint32 &ponder)
+{
+	// iterative deepening framework
+
+	assert(engine::limit.depth >= 1);
+	assert(engine::limit.depth <= lim::depth);
+	assert(engine::multipv >= 1);
+
+	// starting the clock & getting search parameters ready
+
+	expire::start_clock(movetime);
+	search_stack stack[lim::depth + 1];
+	std::vector<variation> pv(lim::multipv);
+
+	int score{ NO_SCORE };
+	uint32 best_move{ };
+
+	// initialising search & generating and sorting moves
+
+	init_stack(stack);
+	init_multipv(pv);
+	init::search();
+
+	movepick_root pick(pos);
+
+	// iterative deepening & looping through multi-principal variations
+
+	for (auto depth{ 1 }; depth <= engine::limit.depth && !engine::stop; ++depth)
+	{
+		for (auto idx{ 0 }; idx < engine::multipv && idx <= pick.list.cnt.moves && !engine::stop; ++idx)
+		{
+			// rearranging root moves & storing the PV from the last iteration
+
+			pick.rearrange_moves(pv[idx].move[0], idx > 0 ? pv[idx - 1].move[0] : NO_MOVE);
+
+			// starting alphabeta search through an aspiration window
+
+			try { score = aspiration(pos, stack, pick, pv[idx], depth, idx + 1); }
+			catch (int &exception)
+			{
+				if (exception == 1) pos.revert(pick.list.pos);
+				else assert(false);
+			}
+
+			chrono.split();
+			assert(score == MIN_SCORE || nodes.cnt != 0);
+			//assert(pv[idx].score < MATE_SCORE || score >= pv[idx].score);
 
 			// defining depth derivates
 
-			int mindepth{ engine::stop ? ply - 1 : ply };
-			int maxdepth{ 0 };
-			int seldepth{ ply };
+			pv[idx].mindepth = depth - engine::stop;
+			pv[idx].seldepth = pv::get_seldepth(pv[idx].move, pv[idx].seldepth, depth);
 
-			while (seldepth < lim::depth - 1 && pv[seldepth] != NO_MOVE)
-				seldepth += 1;
+			// sanity-checking the PV only after a successfull search
 
-			// cutting redundant PV-entries
-
-			for (int d{ MAX_SCORE - abs(score) }; d <= seldepth - 1; pv[d++] = NO_MOVE);
-
-			for (; maxdepth < lim::depth && pv[maxdepth] != NO_MOVE; maxdepth += 1)
+			if (score != MIN_SCORE)
 			{
-				if (!pick.list.is_pseudolegal(pv[maxdepth]))
-				{
-					for (int d{ maxdepth++ }; d < lim::depth && pv[d] != NO_MOVE; pv[d++] = NO_MOVE);
-					break;
-				}
+				pv[idx].score = score;
+				pv::prune(pv[idx], pos);
+				pv::store(pv[idx], pos);
 
-				board.new_move(pv[maxdepth]);
-
-				if (!is_legal(board))
-				{
-					for (int d{ maxdepth++ }; d < lim::depth && pv[d] != NO_MOVE; pv[d++] = NO_MOVE);
-					break;
-				}
+				//assert(!score::mate(pv[idx].score) || abs(pv[idx].score) == MAX_SCORE - pv[idx].maxdepth);
 			}
-			board = pick.reverse;
-
-			// assigning best move and ponder move
-
-			best_move = pv[0];
-			ponder    = pv[1];
-
-			// storing the PV
-
-			for (int d{ 0 }, neg{ 1 }; d < lim::depth && pv[d] != NO_MOVE; ++d, neg *= -1)
-			{
-				assert(pick.list.is_pseudolegal(pv[d]));
-				assert(maxdepth - d > 0);
-
-				tt::store(board, pv[d], score * neg, maxdepth - d + 1, d, EXACT);
-
-				board.new_move(pv[d]);
-
-				assert(is_legal(board));
-			}
-			board = pick.reverse;
-
-			// updating effective branching factor
-
-			if (ebf.prev_n != 0)
-			{
-				ebf.factor += static_cast<double>(nodes - ebf.all_n) / ebf.prev_n;
-				ebf.cnt += 1;
-			}
-			ebf.prev_n = nodes - ebf.all_n;
-			ebf.all_n = nodes;
-			ebf.final_n += ebf.prev_n;
-
-			// precising score
-
-			std::string score_str{ "cp " + std::to_string(score) };
-			if (is_mate(score))
-				score_str = "mate " + std::to_string((MAX_SCORE - abs(score) + 1) / 2);
-			
-			// outputting search information
-
-			log::cout << "info"
-				<< " depth " << mindepth
-				<< " seldepth " << seldepth
-				<< " score " << score_str
-				<< " time " << interim
-				<< " nodes " << nodes
-				<< " nps " << nps
-				<< " hashfull " << tt::hashfull()
-				<< " pv ";
-
-			for (int d{ 0 }; d < ply && pv[d] != NO_MOVE; ++d)
-				log::cout << algebraic(pv[d]) << " ";
-
-			log::cout << std::endl;
-
-			// terminating the search
-
-			if (engine::stop)
-				break;
-			if (engine::infinite)
-				continue;
-			if (score > MATE_SCORE)
-				break;
 		}
 
-		// time is up
+		// outputting search information & selecting best moves
+		
+		output::info(pv);
+		best_move = pv[0].move[0];
+		ponder    = pv[0].move[1];
 
-		else break;
-
-		// stopping search early
-
-		if (ply > 8 && pv[ply - 8] == NO_MOVE)
-			break;
-		if (interim > mean_time.max / 2)
+		if (expire::abort(depth, pv[0], pick))
 			break;
 	}
-
+	nodes.total += nodes.cnt;
+	searchtime += chrono.elapsed;
 	return best_move;
 }
 
-int search::root_alphabeta(pos &board, movepick &pick, uint32 pv[], int ply)
+int search::aspiration(board &pos, search_stack *stack, movepick_root &pick, variation &pv, int depth, int multipv)
 {
-	assert(ply <= lim::depth);
+	// aspiration window, currently deactivated
 
-	// updating root movelist weights
+	int alpha{ MIN_SCORE }, beta{ MAX_SCORE };
+	int alpha_margin{ 10 }, beta_margin{ 10 };
+	int score{ NO_SCORE };
+	int bound{ EXACT };
 
-	if (pv[0] != NO_MOVE)
+	while (true)
 	{
-		assert(pick.list.in_list(pv[0]));
-		pick.rearrange_root(root_nodes, pick.list.find(pv[0]));
+		if (depth >= /*4*/ lim::depth)
+		{
+			assert(pv.score != NO_SCORE);
+			alpha = std::max(pv.score - alpha_margin, (int)MIN_SCORE);
+			beta  = std::min(pv.score +  beta_margin, (int)MAX_SCORE);
+		}
+		assert(MIN_SCORE <= alpha && alpha < beta && beta <= MAX_SCORE);
 
-		pv[0] = NO_MOVE;
+		score = root_alphabeta(pos, stack, pick, pv, depth, alpha, beta, multipv);
+		assert(score != NO_SCORE);
+
+		if (score <= alpha)
+		{
+			bound = UPPER;
+			alpha_margin *= 2;
+		}
+		else if (score >= beta)
+		{
+			bound = LOWER;
+			beta_margin *= 2;
+		}
+
+		if (!score::mate(score) && (score <= alpha || score >= beta))
+			output::bound_info(pv, depth, multipv, score, bound);
+		else break;
 	}
+	return score;
+}
 
-	int beta{ MAX_SCORE };
-	int alpha{ -beta };
+int search::root_alphabeta(board &pos, search_stack *stack, movepick_root &pick, variation &pv, int depth, int alpha, int beta, int multipv)
+{
+	// starting the alphabeta search with the root nodes
+
+	assert(depth >= 1 && depth <= lim::depth);
+	assert(MIN_SCORE <= alpha && alpha < beta && beta <= MAX_SCORE);
 
 	int score{ NO_SCORE };
-	int move_nr{ 0 };
 
 	// looping through the movelist
 
-	for (auto move{ pick.next() }; move != nullptr; move_nr += 1, move = pick.next())
+	for (auto i{ 0 }, moves{ 0 }; i < pick.list.cnt.moves; ++i)
 	{
-		ASSERT(pick.list.is_pseudolegal(*move));
-		assert(beta > alpha);
-		assert(pick.list.in_list(*move));
+		if (pick.sort.root[i].skip)
+			continue;
+		stack->move = pick.sort.root[i].move;
 
-		currmove(ply, *move, move_nr + 1);
+		assert_exp(pos.pseudolegal(stack->move));
+		assert(pick.list.in_list(stack->move));
 
-		auto real_nr{ static_cast<uint32>(move - pick.list.movelist) };
+		output::currmove(depth, multipv, stack->move, moves + 1);
+		pick.sort.root[i].nodes -= nodes.cnt;
 
-		root_nodes[real_nr] -= nodes;
-		board.new_move(*move);
-		nodes += 1;
+		pos.new_move(stack->move);
+		nodes.cnt += 1;
+		assert_exp(position::legal(pos));
 
-		ASSERT(is_legal(board));
+		// check extension & PVS
 
-		// PVS
-
-		if (move_nr > 0)
+		int ext{ pick.sort.root[i].check };
+		if (moves > 0)
 		{
-			score = -alphabeta(board, ply - 1, 1, -alpha, -alpha - 1);
-
+			score = -alphabeta(pos, stack + 1, depth - 1 + ext, -alpha - 1, -alpha);
 			if (score > alpha)
-				score = -alphabeta(board, ply - 1, 1, -alpha, -beta);
+				score = -alphabeta(pos, stack + 1, depth - 1 + ext, -beta, -alpha);
 		}
 		else
-			score = -alphabeta(board, ply - 1, 1, -alpha, -beta);
+			score = -alphabeta(pos, stack + 1, depth - 1 + ext, -beta, -alpha);
 
-		root_nodes[real_nr] += nodes;
-		board = pick.reverse;
-
-		if (engine::stop)
-			break;
+		pick.sort.root[i].nodes += nodes.cnt;
+		pos.revert(pick.list.pos);
+		assert(score > MIN_SCORE && score < MAX_SCORE);
+		assert(score != NO_SCORE);
+		//assert(score >= alpha || (score <= alpha && alpha < MATE_SCORE));
 
 		if (score > alpha)
 		{
+			if (score >= beta)
+				return score;
+
 			alpha = score;
-
-			update::main_pv(*move, pv, real_nr);
-			tt::store(board, pv[0], score, ply, 0, EXACT);
+			update::main_pv(stack->move, pv.move);
+			pick.sort.root[i].nodes += nodes.cnt;
 		}
+		moves += 1;
 	}
-
 	return alpha;
 }
 
-int search::alphabeta(pos &board, int ply, int depth, int beta, int alpha)
+int search::alphabeta(board &pos, search_stack *stack, int depth, int alpha, int beta)
 {
-	assert(beta > alpha);
-	assert(ply >= 0 && ply < lim::depth);
+	// main alphabeta search
 
-	bool pv_node = beta != alpha + 1;
+	assert(MIN_SCORE <= alpha && alpha < beta && beta <= MAX_SCORE);
+	assert(depth <= lim::depth);
 
-	// stopping search or dropping into quiescence search
-	
-	if (draw::verify(board, depth))
-		return contempt[board.turn];
+	// detecting draws & dropping into quiescence search at leaf nodes
 
-	if (ply == 0 || depth >= lim::depth)
-		return qsearch(board, alpha, beta);
-
-	if (stop_thread())
-	{
-		engine::stop = true;
-		return NO_SCORE;
-	}
+	if (draw::verify(pos, stack->depth))
+		return engine::contempt[pos.xturn];
+		
+	if (depth <= 0 || stack->depth >= lim::depth)
+		return qsearch(pos, stack, 0, alpha, beta);
+		
+	expire::check();
 
 	// mate distance pruning
 
-	if (MAX_SCORE - depth < beta)
-	{
-		beta = MAX_SCORE - depth;
-		if (beta <= alpha)
-			return alpha;
-	}
+	auto a_bound{ alpha < MIN_SCORE + stack->depth ? MIN_SCORE + stack->depth : alpha };
+	auto b_bound{ beta  > MAX_SCORE - stack->depth ? MAX_SCORE - stack->depth : beta  };
+	if (b_bound <= a_bound)
+		return a_bound;
 
 	// transposition table lookup
 
-	int tt_score{ NO_SCORE };
-	uint32 tt_move{ NO_MOVE };
-	uint8 tt_flag{ 0 };
-
-	if (tt::probe(board, tt_move, tt_score, ply, depth, tt_flag))
+	bool pv_node{ beta != alpha + 1};
+	if (trans::probe(pos, stack->tt.move, stack->tt.score, stack->tt.bound, depth, stack->depth))
 	{
-		assert(tt_score != NO_SCORE);
-		assert(tt_flag != 0);
+		if (!pv_node)
+			stack->tt.move = NO_MOVE;
 
-		if (pv_node)
+		if (stack->tt.score <= alpha || stack->tt.score >= beta)
 		{
-			if (tt_score <= alpha || tt_score >= beta)
-				tt_move = NO_MOVE;
-		}
-		else if (tt_score >= beta || tt_score <= alpha)
-		{
-			if (tt_flag == LOWER && tt_score >=  beta) return beta;
-			if (tt_flag == UPPER && tt_score <= alpha) return alpha;
-			if (tt_flag == EXACT) return tt_score;
+			if (pv_node)
+				stack->tt.move = NO_MOVE;
+
+			else if (stack->tt.bound == EXACT
+				||  (stack->tt.bound == LOWER && stack->tt.score >= beta)
+				||  (stack->tt.bound == UPPER && stack->tt.score <= alpha))
+				return stack->tt.score;
 		}
 	}
 
-	if (tt_flag != EXACT)
-		tt_move = NO_MOVE;
+	// initialising pruning & evaluating the current position
 
-	// initialising pruning & evaluating the position
+	auto in_check{ pos.check() };
+	auto crucial_node{ pv_node || in_check };
+	auto skip_pruning{ crucial_node || stack->no_pruning };
+	auto score{ crucial_node ? NO_SCORE : eval::static_eval(pos) };
 
-	bool in_check{ is_check(board) };
-	bool skip_pruning{ pv_node || in_check || no_pruning[depth] };
-
-	int score{ pv_node || in_check ? NO_SCORE : eval::static_eval(board) };
+	if (score::refineable(score, stack->tt.score, stack->tt.bound))
+		score = stack->tt.score;
 
 	// static null move pruning
 
-	if (ply <= 3
-		&& !is_mate(beta)
+	if (depth <= 3
+		&& !score::mate(beta)
 		&& !skip_pruning
-		&& score - ply * 50 >= beta)
+		&& score - depth * 50 >= beta)
 	{
-		assert(score != NO_SCORE);
 		return beta;
 	}
 
 	// razoring
 
-	if (ply <= 3
+	if (depth <= 3
 		&& !skip_pruning
-		&& score + ply * 50 + 100 <= alpha)
+		&& score + depth * 50 + 100 <= alpha)
 	{
-		auto raz_alpha{ alpha - ply * 50 - 100 };
-		auto new_score{ qsearch(board, raz_alpha, raz_alpha + 1) };
-
-		if (engine::stop)
-			return NO_SCORE;
-
+		auto raz_alpha{ alpha - depth * 50 - 100 };
+		auto new_score{ qsearch(pos, stack, 0, raz_alpha, raz_alpha + 1) };
 		if (new_score <= raz_alpha)
 			return alpha;
 	}
 
 	// null move pruning
 
-	if (ply >= 3
+	if (depth >= 2
 		&& !skip_pruning
-		&& !board.lone_king()
+		&& !pos.lone_king()
 		&& score >= beta)
 	{
-		int R{ 2 };
-		uint64 ep_copy{ 0 };
-		uint16 capt_copy{ 0 };
+		auto R{ 3 + std::min(3, (score - beta) / 128) };
 
-		board.null_move(ep_copy, capt_copy);
-		nodes += 1;
+		null::make_move(pos, stack);
+		nodes.cnt += 1;
+		auto null_score{ -alphabeta(pos, stack + 1, depth - 1 - R, -beta, 1 - beta) };
+		null::revert_move(pos, stack);
 
-		no_pruning[depth + 1] = true;
-		score = -alphabeta(board, ply - R - 1, depth + 1, 1 - beta, -beta);
-		no_pruning[depth + 1] = false;
-
-		if (engine::stop)
-			return NO_SCORE;
-
-		board.undo_null_move(ep_copy, capt_copy);
-
-		if (score >= beta)
-		{
-			tt::store(board, NO_MOVE, score, ply, depth, LOWER);
+		if (null_score >= beta)
 			return beta;
-		}
 	}
 
-	// futility pruning condition
+	// internal iterative deepening
 
-	int fut_eval{ NO_SCORE };
-	if (ply <= 6 && !pv_node && !in_check)
+	if (pv_node
+		&& stack->tt.move == NO_MOVE
+		&& !stack->no_pruning
+		&& depth >= 3)
 	{
-		assert(score != NO_SCORE);
-		fut_eval = score + 50 + 100 * ply;
+		stack->no_pruning = true;
+		alphabeta(pos, stack, depth - 2, alpha, beta);
+		stack->no_pruning = false;
+
+		trans::probe(pos, stack->tt.move, stack->tt.score, stack->tt.bound, depth, stack->depth);
 	}
-	
+
+	// initialising move loop
+
+	auto is_futile{ !crucial_node && depth <= 6 };
+	auto fut_score{ score + 50 + 100 * depth };
+	auto best_score{ -MAX_SCORE };
+
+	auto &counter{ counter_move[move::piece((stack - 1)->move)][move::sq2((stack - 1)->move)] };
+	auto prev_alpha{ alpha };
+
 	// generating and sorting moves while looping through them
-		
-	movepick pick(board, tt_move, history, killer, depth);
 
-	int prev_alpha{ alpha };
-	int move_nr{ 0 };
-
-	for (auto move{ pick.next() }; move != nullptr; move_nr += 1, move = pick.next())
+	movepick pick(pos, stack->tt.move, counter, history, killer, stack->depth);
+	for (stack->move = pick.next(); stack->move; stack->move = pick.next())
 	{
-		ASSERT(pick.list.is_pseudolegal(*move));
+		// doing the move
 
-		board.new_move(*move);
-
-		if (!is_legal(board))
+		assert_exp(pos.pseudolegal(stack->move));
+		pos.new_move(stack->move);
+		if (!position::legal(pos))
 		{
-			assert(pick.list.mode == PSEUDO);
-			board = pick.reverse;
-			move_nr -= 1;
+			pos.revert(pick.list.pos);
+			pick.attempts -= 1;
 			continue;
 		}
+		nodes.cnt += 1;
 
-		nodes += 1;
+		// initialising move
 
-		// extensions
+		auto gives_check{ pos.check() };
+		auto is_dangerous{ gives_check || !move::is_quiet(stack->move)
+			|| move::is_pawn_advance(stack->move) || move::is_castling(stack->move)
+			|| move::is_killer(stack->move, counter, stack->depth) };
 
-		int ext{ 0 };
-		bool new_check{ is_check(board) };
+		// futility pruning
 
-		if (new_check && (ply <= 4 || pv_node))
-			ext = 1;
-		else if (pv_node && pick.reverse.recapture(*move))
-			ext = 1;
-		else if (pv_node && is_pawn_to_7th(*move))
-			ext = 1;
-
-		// reverse futility pruning
-
-		if (move_nr > 0 && fut_eval <= alpha && is_quiet(*move) && !is_mate(alpha) && !new_check && !is_killer(*move, depth))
+		if (is_futile && !is_dangerous && pick.attempts > 0 && fut_score <= alpha && !score::mate(alpha))
 		{
-			board = pick.reverse;
-			continue;
+			pos.revert(pick.list.pos); continue;
 		}
 
-		// PVS
+		// late move pruning
 
-		if (pv_node && move_nr > 0)
+		if (!skip_pruning && !is_dangerous && depth <= 3 && pick.attempts >= depth * 4)
 		{
-			score = -alphabeta(board, ply - 1 + ext, depth + 1, -alpha, -alpha - 1);
+			pos.revert(pick.list.pos); continue;
+		}
 
+		// extensions & PVS
+
+		auto ext{ move::extend(stack->move, gives_check, pv_node, depth, pick.list.pos) };
+
+		if (pv_node && pick.attempts > 0)
+		{
+			score = -alphabeta(pos, stack + 1, depth - 1 + ext, -alpha - 1, -alpha);
 			if (score > alpha)
-				score = -alphabeta(board, ply - 1 + ext, depth + 1, -alpha, -beta);
+				score = -alphabeta(pos, stack + 1, depth - 1 + ext, -beta, -alpha);
 		}
 		else
-			score = -alphabeta(board, ply - 1 + ext, depth + 1, -alpha, -beta);
+			score = -alphabeta(pos, stack + 1, depth - 1 + ext, -beta, -alpha);
 
-		if (engine::stop)
-			return NO_SCORE;
+		pos.revert(pick.list.pos);
+		assert(score != NO_SCORE);
 
-		board = pick.reverse;
+		// checking for a new best move
 
-		// failing high
-
-		if (score >= beta)
+		if (score > best_score)
 		{
-			tt::store(board, NO_MOVE, score, ply, depth, LOWER);
-			update::heuristics(board, *move, ply, depth);
+			best_score = score;
+			if (score > alpha)
+			{
+				// checking for a beta cutoff
 
-			return beta;
-		}
+				if (score >= beta)
+				{
+					trans::store(pos, NO_MOVE, score, LOWER, depth, stack->depth);
+					update::heuristics(pos, stack->move, counter, depth, stack->depth);
 
-		if (score > alpha)
-		{
-			alpha = score;
-
-			tt::store(board, *move, score, ply, depth, EXACT);
-			update::temp_pv(depth, *move);
+					nodes.fail_high += 1;
+					nodes.fail_high_1st += (pick.attempts == 0);
+					return score;
+				}
+				alpha = score;
+				update::evolving_pv(stack->depth, stack->move);
+			}
 		}
 	}
+
+	// storing results & detecting checkmate/stalemate
 
 	if (alpha == prev_alpha)
 	{
-		// detecting checkmate & stalemate
+		if (pick.attempts == -1)
+			return in_check ? stack->depth - MAX_SCORE : engine::contempt[pos.xturn];
 
-		if (move_nr == 0)
-			return in_check ? depth - MAX_SCORE : contempt[board.turn];
-
-		// storing nodes that failed low
-
-		else
-			tt::store(board, NO_MOVE, alpha, ply, depth, UPPER);
+		trans::store(pos, NO_MOVE, best_score, UPPER, depth, stack->depth);
 	}
-		
-	return alpha;
+	else
+	{
+		assert(alpha > prev_alpha);
+		trans::store(pos, evolving.pv[stack->depth - 1][0], best_score, EXACT, depth, stack->depth);
+	}
+	
+	assert(best_score > MIN_SCORE && best_score < MAX_SCORE);
+	return best_score;
 }
 
-int search::qsearch(pos &board, int alpha, int beta)
+int search::qsearch(board &pos, search_stack *stack, int depth, int alpha, int beta)
 {
-	// verifying draws & timeouts
+	assert(MIN_SCORE <= alpha && alpha < beta && beta <= MAX_SCORE);
+	assert(depth <= 0);
+	assert_exp(depth != 0 || !pos.check());
 
-	if (draw::by_material(board))
-		return contempt[board.turn];
+	// detecting draws
 
-	if (stop_thread())
+	if (draw::verify(pos, stack->depth))
+		return engine::contempt[pos.xturn];
+		
+	expire::check();
+	
+	// transposition table lookup
+
+	if (depth == 0 && trans::probe(pos, stack->tt.move, stack->tt.score, stack->tt.bound, depth, stack->depth))
 	{
-		engine::stop = true;
-		return NO_SCORE;
+		if (stack->tt.bound == EXACT
+			|| (stack->tt.bound == LOWER && stack->tt.score >= beta)
+			|| (stack->tt.bound == UPPER && stack->tt.score <= alpha))
+			return stack->tt.score;
 	}
 
-	// stand pat
+	// standing pat & considering checks
 
-	int score{ eval::static_eval(board) };
+	auto stand_pat{ eval::static_eval(pos) };
+	auto best_score{ stand_pat };
+	auto in_check{ depth == -1 && pos.check() };
 
-	if (score >= beta)
-		return beta;
-
-	if (score > alpha)
-		alpha = score;
+	if (!in_check && stand_pat > alpha)
+	{
+		if (stand_pat >= beta)
+			return stand_pat;
+		alpha = stand_pat;
+	}
 
 	// generating and sorting moves while looping through them
 
-	movepick pick(board);
-
-	for (auto move{ pick.next() }; move != nullptr; move = pick.next())
+	movepick pick(pos, in_check, depth);
+	for (stack->move = pick.next(); stack->move; stack->move = pick.next())
 	{
-		ASSERT(pick.list.is_pseudolegal(*move));
+		assert(depth >= -1 || !move::is_quiet(stack->move));
+		assert_exp(pos.pseudolegal(stack->move));
+		auto skip_pruning{ in_check || move::is_quiet(stack->move) };
+
+		// depth limit pruning
+
+		if (!skip_pruning
+			&& depth <= -6
+			&& !pos.recapture(stack->move))
+			continue;
 
 		// delta pruning
 
-		if (!board.lone_king()
-			&& !is_promo(*move)
-			&& score + see::exact_value[to_victim(*move)] + 100 < alpha)
+		if (!skip_pruning
+			&& !pos.lone_king()
+			&& !move::is_promo(stack->move)
+			&& stand_pat + see::value[move::victim(stack->move)] + 100 < alpha)
 			continue;
 
 		// SEE pruning
 
-		if (!is_promo(*move)
-			&& see::exact_value[to_piece(*move)] > see::exact_value[to_victim(*move)]
-			&& see::eval(board, *move) < 0)
+		if (!skip_pruning
+			&& !move::is_promo(stack->move)
+			&& see::value[move::piece(stack->move)] > see::value[move::victim(stack->move)]
+			&& see::eval(pos, stack->move) < 0)
 			continue;
 
-		board.new_move(*move);
-		nodes += 1;
+		pos.new_move(stack->move);
+		assert_exp(position::legal(pos));
+		nodes.cnt += 1;
+		nodes.qs += 1;
 
-		ASSERT(is_legal(board));
+		auto score{ -qsearch(pos, stack + 1, depth - 1, -beta, -alpha) };
+		pos.revert(pick.list.pos);
+		assert(score != NO_SCORE);
 
-		score = -qsearch(board, -beta, -alpha);
-
-		board = pick.reverse;
-
-		if (engine::stop)
-			return NO_SCORE;
-
-		if (score >= beta)
-			return beta;
-
-		if (score > alpha)
-			alpha = score;
+		if (score > best_score)
+		{
+			best_score = score;
+			if (score > alpha)
+			{
+				alpha = score;
+				if (score >= beta)
+					return score;
+			}
+		}
 	}
 
-	return alpha;
+	// detecting checkmate
+
+	if (in_check && pick.attempts == -1)
+		return stack->depth - MAX_SCORE;
+
+	assert(best_score > MIN_SCORE && best_score < MAX_SCORE);
+	return best_score;
 }

@@ -1,5 +1,5 @@
 /*
-  Monolith 0.3  Copyright (C) 2017 Jonas Mayr
+  Monolith 0.4  Copyright (C) 2017 Jonas Mayr
 
   This file is part of Monolith.
 
@@ -18,15 +18,19 @@
 */
 
 
-#pragma once
+#include "random.h"
+#include "zobrist.h"
 
-#include "main.h"
+uint64 zobrist::rand_key[781];
 
-// bitboard operations
+const struct zobrist::offset zobrist::off{ 768, 772, 780 };
 
-namespace bb
+void zobrist::init_keys()
 {
-	int popcnt(uint64 board);
+	// generating Zobrist hash keys
 
-	unsigned long bitscan(uint64 board);
-};
+	rand_64 rand_gen;
+
+	for (auto &key : rand_key)
+		key = rand_gen.rand64();
+}
