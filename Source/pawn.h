@@ -23,30 +23,49 @@
 #include "position.h"
 #include "main.h"
 
-// bitboard attacking functions
+// managing the pawn hash table
 
-class attack
+class pawn
 {
 public:
 
-	// attacking bitboards
+	// pawn hash entry is 32 bytes
 
-	static uint64 in_front[2][64];
-	static uint64 slide_map[2][64];
-	static uint64 knight_map[64];
-	static uint64 king_map[64];
+	struct hash
+	{
+		uint64 key;
+		uint64 passed[2];
+		int16 score[2][2];
+		void clear();
+	};
 
-	static void fill_tables();
+	static_assert(sizeof(hash) == 32, "pawnhash entry > 32 bytes");
 
-	// detecting check & generating attacks
+	// actual table & properties
 
-	static uint64 check(const board &pos, int turn, uint64 all_sq);
+	static hash *table;
 
-	template<sliding_type sl> static uint64 by_slider(int sq, uint64 occ);
-	static uint64 by_pawns(const board &pos, int turn);
+	const static uint64 size;
+	const static uint64 mask;
 
-	// assisting SEE
+	static uint64 to_key(const board &pos);
 
-	static uint64 to_square(const board &pos, int sq);
-	static uint64 add_xray(const board &pos, int sq, uint64 &occ);
+	// creating & destroying the table
+
+	pawn()
+	{
+		table = new hash[size];
+		clear();
+	}
+
+	~pawn()
+	{
+		if (table != nullptr)
+		{
+			delete[] table;
+			table = nullptr;
+		}
+	}
+
+	void clear();
 };

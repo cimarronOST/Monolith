@@ -20,33 +20,22 @@
 
 #pragma once
 
-#include "position.h"
 #include "main.h"
 
-// bitboard attacking functions
+// Zobrist hashing used for transposition table & pawn table & repetition detection
 
-class attack
+class zobrist
 {
 public:
 
-	// attacking bitboards
+	static const struct offset
+	{
+		int castling;
+		int ep;
+		int turn;
+	} off;
 
-	static uint64 in_front[2][64];
-	static uint64 slide_map[2][64];
-	static uint64 knight_map[64];
-	static uint64 king_map[64];
-
-	static void fill_tables();
-
-	// detecting check & generating attacks
-
-	static uint64 check(const board &pos, int turn, uint64 all_sq);
-
-	template<sliding_type sl> static uint64 by_slider(int sq, uint64 occ);
-	static uint64 by_pawns(const board &pos, int turn);
-
-	// assisting SEE
-
-	static uint64 to_square(const board &pos, int sq);
-	static uint64 add_xray(const board &pos, int sq, uint64 &occ);
+	static uint64 rand_key[781];
+	
+	static void init_keys();
 };

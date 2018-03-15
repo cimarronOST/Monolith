@@ -1,5 +1,5 @@
 /*
-  Monolith 0.3  Copyright (C) 2017 Jonas Mayr
+  Monolith 0.4  Copyright (C) 2017 Jonas Mayr
 
   This file is part of Monolith.
 
@@ -18,62 +18,91 @@
 */
 
 
-#include <algorithm>
-
+#include "move.h"
+#include "bit.h"
 #include "attack.h"
 #include "see.h"
 
-uint64 see::lvp(const pos &board, const uint64 &set, int col, int &piece)
+namespace
 {
-	// determining the least valuable piece
-
-	for (piece = PAWNS; piece <= KINGS; ++piece)
-	{
-		uint64 subset{ set & board.pieces[piece] & board.side[col] };
-		if (subset)
-			return (subset & (subset - 1)) ^ subset;
-	}
-	return 0ULL;
+	int gain[32]{ };
 }
 
-int see::eval(const pos &board, uint32 move)
+namespace
 {
-	// inspired by Michael Hoffmann
+	int sum_gain(int depth)
+	{
+		// summing up the exchange balance
 
-	int gain[32]{ 0 }, d{ 0 };
-	uint64 all_xray{ board.pieces[PAWNS] | board.pieces[ROOKS] | board.pieces[BISHOPS] | board.pieces[QUEENS] };
+		while (--depth)
+			gain[depth - 1] = -std::max(-gain[depth - 1], gain[depth]);
+		return gain[0];
+	}
 
-	auto sq1{ to_sq1(move) };
-	auto sq2{ to_sq2(move) };
-	uint64 sq1_64{ 1ULL << sq1 };
+	uint64 least_valuable(const board &pos, uint64 set, int &piece)
+	{
+		// selecting the least valuable attacker of the set
 
-	uint64 occ{ board.side[BOTH] };
-	uint64 set{ attack::to_square(board, sq2) };
-	uint64 gone{ 0ULL };
-	int piece{ to_piece(move) };
+		for (auto &p : pos.pieces)
+		{
+			if (p & set)
+			{
+				auto sq1{ bit::scan(p & set) };
+				piece = pos.piece_sq[sq1];
+				return 1ULL << sq1;
+			}
+		}
+		return 0ULL;
+	}
+}
 
-	assert(to_victim(move) != NONE);
-	gain[d] = exact_value[to_victim(move)];
+int see::eval(const board &pos, uint32 move)
+{
+	// doing a static exchange evaluation of the square reached by <move>
 
+	// credits go to Michael Hoffman:
+	// https://chessprogramming.wikispaces.com/SEE+-+The+Swap+Algorithm
+
+	auto sq1{ move::sq1(move) };
+	auto sq2{ move::sq2(move) };
+	auto attacker{ 1ULL << sq1 };
+
+	auto occ{ pos.side[BOTH] };
+	auto set{ attack::to_square(pos, sq2) };
+	auto xray_block{ pos.pieces[PAWNS] | pos.pieces[ROOKS] | pos.pieces[BISHOPS] | pos.pieces[QUEENS] };
+
+	int depth{ };
+	int turn{ pos.turn };
+	int piece{ pos.piece_sq[sq1] };
+
+	assert(move::piece(move) == piece);
+	assert(move::turn(move) == pos.turn);
+
+	// looping through the exchange sequence
+
+	gain[depth] = value[move::victim(move)];
 	do
 	{
-		gain[++d] = exact_value[piece] - gain[d - 1];
+		depth += 1;
+		gain[depth] = value[piece] - gain[depth - 1];
 
-		if (std::max(-gain[d - 1], gain[d]) < 0)
+		// pruning early if the exchange balance is decisive
+
+		if (std::max(-gain[depth - 1], gain[depth]) < 0)
 			break;
 
-		set  ^= sq1_64;
-		occ  ^= sq1_64;
-		gone |= sq1_64;
+		turn ^= 1;
+		set ^= attacker;
+		occ ^= attacker;
 
-		if (sq1_64 & all_xray)
-			set |= attack::add_xray(board, occ, set, gone, sq2);
+		// adding uncovered x-ray attackers to the set & finding the least valuable attacker
 
-		sq1_64 = lvp(board, set, board.turn ^ (d & 1), piece);
+		if (attacker & xray_block)
+			set |= attack::add_xray(pos, sq2, occ);
 
-	} while (sq1_64);
+		attacker = least_valuable(pos, set & pos.side[turn], piece);
 
-	while (--d) gain[d - 1] = -std::max(-gain[d - 1], gain[d]);
+	} while (attacker);
 
-	return gain[0];
+	return sum_gain(depth);
 }

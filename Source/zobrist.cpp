@@ -18,35 +18,19 @@
 */
 
 
-#pragma once
+#include "random.h"
+#include "zobrist.h"
 
-#include "position.h"
-#include "main.h"
+uint64 zobrist::rand_key[781];
 
-// bitboard attacking functions
+const struct zobrist::offset zobrist::off{ 768, 772, 780 };
 
-class attack
+void zobrist::init_keys()
 {
-public:
+	// generating Zobrist hash keys
 
-	// attacking bitboards
+	rand_64 rand_gen;
 
-	static uint64 in_front[2][64];
-	static uint64 slide_map[2][64];
-	static uint64 knight_map[64];
-	static uint64 king_map[64];
-
-	static void fill_tables();
-
-	// detecting check & generating attacks
-
-	static uint64 check(const board &pos, int turn, uint64 all_sq);
-
-	template<sliding_type sl> static uint64 by_slider(int sq, uint64 occ);
-	static uint64 by_pawns(const board &pos, int turn);
-
-	// assisting SEE
-
-	static uint64 to_square(const board &pos, int sq);
-	static uint64 add_xray(const board &pos, int sq, uint64 &occ);
-};
+	for (auto &key : rand_key)
+		key = rand_gen.rand64();
+}

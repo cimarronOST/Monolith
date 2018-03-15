@@ -1,5 +1,5 @@
 /*
-  Monolith 0.3  Copyright (C) 2017 Jonas Mayr
+  Monolith 0.4  Copyright (C) 2017 Jonas Mayr
 
   This file is part of Monolith.
 
@@ -20,11 +20,14 @@
 
 #pragma once
 
+#include <random>
+
 #include "main.h"
 
-// pseudo random number generation
+// pseudo random number generation through xor-shift
+// used to generate "magic" index numbers
 
-class rand_xor
+class rand_64xor
 {
 private:
 
@@ -33,6 +36,43 @@ private:
 
 public:
 
-	rand_xor(uint64 new_seed) : seed(new_seed) {}
+	void new_magic_seed(int idx);
+
 	uint64 sparse64();
+};
+
+// pseudo random number generation through the standard library
+// used to generate Zobrist hash keys
+
+class rand_64
+{
+private:
+
+	std::mt19937_64 rand_gen;
+	std::uniform_int_distribution<uint64> uniform;
+
+public:
+
+	rand_64() : rand_gen(5489U) { }
+
+	uint64 rand64();
+};
+
+// pseudo random number generation through the standard library
+// used to randomly choose a opening book move
+
+class rand_32
+{
+private:
+
+	std::random_device rd;
+
+	std::mt19937 rand_gen;
+	std::uniform_int_distribution<int> uniform;
+
+public:
+
+	rand_32() : rand_gen(rd()) { }
+
+	int rand32(int range);
 };

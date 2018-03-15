@@ -1,5 +1,5 @@
 /*
-  Monolith 0.3  Copyright (C) 2017 Jonas Mayr
+  Monolith 0.4  Copyright (C) 2017 Jonas Mayr
 
   This file is part of Monolith.
 
@@ -18,100 +18,175 @@
 */
 
 
-#include "movegen.h"
-#include "bitboard.h"
+#include "bit.h"
 #include "magic.h"
 #include "attack.h"
 
+uint64 attack::in_front[2][64]{ };
+uint64 attack::slide_map[2][64]{ };
+uint64 attack::knight_map[64]{ };
+uint64 attack::king_map[64]{ };
+
 namespace
 {
-	const uint64 boarder[]{ file[A], file[H] };
+	// directing pawn captures
 
-	const int cap_left[]{ 9, 55 };
+	const uint64 boarder_left[] { bit::file[A], bit::file[H] };
+	const uint64 boarder_right[]{ bit::file[H], bit::file[A] };
+
+	const int cap_left[] { 9, 55 };
 	const int cap_right[]{ 7, 57 };
 }
 
-uint64 attack::by_slider(const int sl, const int sq, uint64 occ)
+namespace
+{
+	// initialising tables at startup
+
+	void init_slide(int sq, uint64 &sq64, int sl)
+	{
+		assert(sl == ROOK || sl == BISHOP);
+
+		for (int dir{ sl }; dir < 8; dir += 2)
+		{
+			uint64 flood{ sq64 };
+			while (!(flood & magic::ray[dir].boarder))
+			{
+				bit::real_shift(flood, magic::ray[dir].shift);
+				attack::slide_map[sl][sq] |= flood;
+			}
+		}
+	}
+
+	void init_king(int sq, uint64 &sq64)
+	{
+		for (auto dir{ 0 }; dir < 8; ++dir)
+		{
+			if (!(sq64 & magic::ray[dir].boarder))
+				attack::king_map[sq] |= bit::shift(sq64, magic::ray[dir].shift);
+		}
+	}
+
+	void init_knight(int sq, uint64 &sq64, magic::pattern jump[])
+	{
+		for (auto dir{ 0 }; dir < 8; ++dir)
+		{
+			if (!(sq64 & jump[dir].boarder))
+				attack::knight_map[sq] |= bit::shift(sq64, jump[dir].shift);
+		}
+	}
+
+	void init_in_front(int sq, uint64 &sq64)
+	{
+		attack::in_front[BLACK][sq] =  (sq64 - 1) & ~bit::rank[square::rank(sq)];
+		attack::in_front[WHITE][sq] = ~(sq64 - 1) & ~bit::rank[square::rank(sq)];
+	}
+}
+
+void attack::fill_tables()
+{
+	// filling various attack tables, called at startup
+	// the jump pattern is used for the knight table generation
+
+	magic::pattern jump[]
+	{
+		{ 15, 0xffff010101010101 },{  6, 0xff03030303030303 },
+		{ 54, 0x03030303030303ff },{ 47, 0x010101010101ffff },
+		{ 49, 0x808080808080ffff },{ 58, 0xc0c0c0c0c0c0c0ff },
+		{ 10, 0xffc0c0c0c0c0c0c0 },{ 17, 0xffff808080808080 }
+	};
+
+	for (int sq{ H1 }; sq <= A8; ++sq)
+	{
+		auto sq64{ 1ULL << sq };
+
+		init_slide(sq, sq64, ROOK);
+		init_slide(sq, sq64, BISHOP);
+		init_king(sq, sq64);
+		init_knight(sq, sq64, jump);
+		init_in_front(sq, sq64);
+	}
+}
+
+uint64 attack::check(const board &pos, int turn, uint64 all_sq)
+{
+	// returning the squares <all_sq> that are not under enemy attack
+
+	assert(turn == WHITE || turn == BLACK);
+
+	auto occ{ pos.side[BOTH] & ~(pos.pieces[KINGS] & pos.side[turn]) };
+	auto inquire{ all_sq };
+
+	while (inquire)
+	{
+		auto sq{ bit::scan(inquire) };
+		auto att
+		{
+			pos.side[turn ^ 1]
+			& ((pos.pieces[PAWNS] & king_map[sq] & slide_map[BISHOP][sq] & in_front[turn][sq])
+			|  (pos.pieces[KNIGHTS] & knight_map[sq])
+			| ((pos.pieces[ROOKS] | pos.pieces[QUEENS]) & by_slider<ROOK>(sq, occ))
+			| ((pos.pieces[BISHOPS] | pos.pieces[QUEENS]) & by_slider<BISHOP>(sq, occ))
+			|  (pos.pieces[KINGS] & king_map[sq]))
+		};
+		if (att)
+			all_sq ^= (1ULL << sq);
+		inquire &= inquire - 1;
+	}
+
+	return all_sq;
+}
+
+template uint64 attack::by_slider<ROOK>  (int sq, uint64 occ);
+template uint64 attack::by_slider<BISHOP>(int sq, uint64 occ);
+template uint64 attack::by_slider<QUEEN> (int sq, uint64 occ);
+
+template<sliding_type sl>
+uint64 attack::by_slider(int sq, uint64 occ)
 {
 	// magic index hashing function to generate sliding moves
 
-	assert(sq >= 0 && sq < 64);
+	if (sl == QUEEN)
+		return by_slider<ROOK>(sq, occ) | by_slider<BISHOP>(sq, occ);
+
+	assert(sq >= H1 && sq <= A8);
 	assert(sl == ROOK || sl == BISHOP);
 
 	occ  &= magic::slider[sl][sq].mask;
 	occ  *= magic::slider[sl][sq].magic;
 	occ >>= magic::slider[sl][sq].shift;
-	return magic::attack_table[magic::slider[sl][sq].offset + static_cast<uint32>(occ)];
+	occ  += magic::slider[sl][sq].offset;
+	return  magic::attack_table[occ];
 }
 
-uint64 attack::check(const pos &board, int turn, uint64 all_sq)
+uint64 attack::by_pawns(const board &pos, int turn)
 {
-	// returning the (king's) squares that are not under enemy attack
+	// returning all squares attacked by pawns
 
 	assert(turn == WHITE || turn == BLACK);
 
-	const uint64 king{ board.side[turn] & board.pieces[KINGS] };
-	uint64 inquire{ all_sq };
-
-	while (inquire)
-	{
-		auto sq{ bb::bitscan(inquire) };
-		const uint64 sq64{ 1ULL << sq };
-		const uint64 in_front[]{ ~(sq64 - 1), sq64 - 1 };
-
-		uint64 att{ by_slider(ROOK, sq, board.side[BOTH] & ~king) & (board.pieces[ROOKS] | board.pieces[QUEENS]) };
-		att |= by_slider(BISHOP, sq, board.side[BOTH] & ~king) & (board.pieces[BISHOPS] | board.pieces[QUEENS]);
-		att |= movegen::knight_table[sq] & board.pieces[KNIGHTS];
-		att |= movegen::king_table[sq] & board.pieces[KINGS];
-		att |= movegen::king_table[sq] & board.pieces[PAWNS] & movegen::slide_ray[BISHOP][sq] & in_front[turn];
-		att &= board.side[turn ^ 1];
-
-		if (att)
-			all_sq ^= sq64;
-
-		inquire &= inquire - 1;
-	}
-	return all_sq;
+	return bit::shift(pos.pieces[PAWNS] & pos.side[turn] & ~boarder_left[turn],  cap_left[turn])
+		 | bit::shift(pos.pieces[PAWNS] & pos.side[turn] & ~boarder_right[turn], cap_right[turn]);
 }
 
-uint64 attack::by_pawns(const pos &board, int col)
+// assisting the SEE-algorithm
+
+uint64 attack::to_square(const board &pos, int sq)
 {
-	// returning all squares attacked by pawns of int color
+	// merging all attacking pieces of a square <sq> into one bitboard
 
-	assert(col == WHITE || col == BLACK);
-
-	return shift(board.pieces[PAWNS] & board.side[col] & ~boarder[col], cap_left[col])
-		 | shift(board.pieces[PAWNS] & board.side[col] & ~boarder[col ^ 1], cap_right[col]);
+	return (pos.pieces[PAWNS] & king_map[sq] & slide_map[BISHOP][sq] & pos.side[BLACK] & in_front[WHITE][sq])
+		 | (pos.pieces[PAWNS] & king_map[sq] & slide_map[BISHOP][sq] & pos.side[WHITE] & in_front[BLACK][sq])
+		 | (pos.pieces[KNIGHTS] & knight_map[sq])
+		 |((pos.pieces[BISHOPS] | pos.pieces[QUEENS]) & by_slider<BISHOP>(sq, pos.side[BOTH]))
+		 |((pos.pieces[ROOKS] | pos.pieces[QUEENS]) & by_slider<ROOK>(sq, pos.side[BOTH]))
+		 | (pos.pieces[KINGS] & king_map[sq]);
 }
 
-// SEE functions
-
-uint64 attack::to_square(const pos &board, uint16 sq)
+uint64 attack::add_xray(const board &pos, int sq, uint64 &occ)
 {
-	// merging all attacking pieces of a specific square into one bitboard
+	// adding newly uncovered x-ray attackers to the attacker-set
 
-	const uint64 in_front[]{ (1ULL << sq) - 1, ~((1ULL << sq) - 1) };
-
-	uint64 att{ by_slider(ROOK, sq, board.side[BOTH]) & (board.pieces[ROOKS] | board.pieces[QUEENS]) };
-	att |= by_slider(BISHOP, sq, board.side[BOTH]) & (board.pieces[BISHOPS] | board.pieces[QUEENS]);
-	att |= movegen::knight_table[sq] & board.pieces[KNIGHTS];
-	att |= movegen::king_table[sq] & board.pieces[KINGS];
-	att |= movegen::king_table[sq] & board.pieces[PAWNS] & movegen::slide_ray[BISHOP][sq] & board.side[BLACK] & in_front[BLACK];
-	att |= movegen::king_table[sq] & board.pieces[PAWNS] & movegen::slide_ray[BISHOP][sq] & board.side[WHITE] & in_front[WHITE];
-
-	return att;
-}
-
-uint64 attack::add_xray(const pos &board, uint64 &occ, uint64 &set, uint64 &gone, uint16 sq)
-{
-	// adding undiscovered x-ray attackers to the attacker-set
-
-	uint64 att{ by_slider(ROOK, sq, occ) & (board.pieces[ROOKS] | board.pieces[QUEENS]) };
-	att |= by_slider(BISHOP, sq, occ) & (board.pieces[BISHOPS] | board.pieces[QUEENS]);
-	att &= ~gone;
-
-	assert(!((1ULL << sq) & att));
-	assert(bb::popcnt((att & set) ^ att) <= 1);
-
-	return (att & set) ^ att;
+	return ((by_slider<ROOK>(sq, occ) & (pos.pieces[ROOKS] | pos.pieces[QUEENS]))
+		| (by_slider<BISHOP>(sq, occ) & (pos.pieces[BISHOPS] | pos.pieces[QUEENS])))
+		& occ;
 }

@@ -1,5 +1,5 @@
 /*
-  Monolith 0.3  Copyright (C) 2017 Jonas Mayr
+  Monolith 0.4  Copyright (C) 2017 Jonas Mayr
 
   This file is part of Monolith.
 
@@ -20,33 +20,38 @@
 
 #pragma once
 
+#include <vector>
+
 #include "position.h"
 #include "main.h"
 
-// move generation, can be staged and legal or pseudolegal
+// staged move generation, can be legal or pseudolegal
 
-class movegen
+class gen
 {
 public:
 
-	pos &board;
-	GEN_MODE mode;
+	board pos;
 
-	uint32 hash_move;
-
-	movegen(pos &basic_board) : board(basic_board) { }
-
-	movegen(pos &basic_board, GEN_MODE genmode) : board(basic_board), mode(genmode)
+	gen(board &position, gen_mode mode) : pos(position)
 	{
-		init_list();
-	}
-
-	movegen(pos &basic_board, GEN_MODE genmode, uint32 tt_move) : board(basic_board), mode(genmode), hash_move(tt_move)
-	{
-		init_list();
+		if (mode == LEGAL)
+		{
+			find_pins();
+			find_evasions();
+		}
+		else
+		{
+			assert(mode == PSEUDO);
+			evasions = ~0ULL;
+		}
 	}
 
 private:
+
+	// speeding up minor piece check generation
+
+	uint64 king_color{ ~0ULL };
 
 	// preparing legal moves
 
@@ -58,63 +63,44 @@ private:
 
 public:
 
-	// checking pseudo-legal moves
+	// movelist
 
-	bool is_pseudolegal(uint32 move);
-
-	// concerning movelist
-
-	uint32 movelist[lim::movegen];
+	uint32 move[lim::moves];
 
 	struct count
 	{
-		int moves{ 0 };
-		int hash{ 0 };
-		int capture{ 0 };
-		int promo{ 0 };
-		int quiet{ 0 };
-		int loosing{ 0 };
+		int moves{ };
+		int capture{ };
+		int promo{ };
+		int loosing{ };
 	} cnt;
 
 	bool in_list(uint32 move);
 	uint32 *find(uint32 move);
 
-	// bitboard filling
+	// generating staged moves as commanded by movepick
 
-	static void init_ray(int sl);
-	static void init_king();
-	static void init_knight();
+	void gen_all();
+	void gen_searchmoves(std::vector<uint32> &searchmoves);
 
-	static uint64 slide_ray[2][64];
-	static uint64 knight_table[64];
-	static uint64 king_table[64];
-
-	// generating moves
-
-	void init_list();
-
-	int gen_hash();
-	int gen_tactical();
+	int gen_hash(uint32 &hash_move);
+	template<promo_mode promo> int gen_tactical();
+	int gen_killer(uint32 killer[][2], int depth, uint32 counter);
 	int gen_quiet();
 	int gen_loosing();
+	int gen_check();
 
 private:
 
-	void pawn_promo();
+	// actual move generation functions
+
+	template<promo_mode promo> void pawn_promo();
 	void pawn_capt();
-	void pawn_quiet();
+	void pawn_quiet(uint64 mask);
 
-	void knight(GEN_STAGE stage);
-	void bishop(GEN_STAGE stage);
-	void rook(GEN_STAGE stage);
-	void queen(GEN_STAGE stage);
-	void king(GEN_STAGE stage);
-
-	// often used variables
-
-	uint64 enemies, friends, fr_king, pawn_rank;
-	uint64 not_right, not_left;
-	uint64 gentype[2];
-
-	uint8 AHEAD, BACK;
+	void knight(uint64 mask);
+	void bishop(uint64 mask);
+	void rook(uint64 mask);
+	void queen(uint64 mask);
+	void king(uint64 mask);
 };

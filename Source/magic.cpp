@@ -1,5 +1,5 @@
 /*
-  Monolith 0.3  Copyright (C) 2017 Jonas Mayr
+  Monolith 0.4  Copyright (C) 2017 Jonas Mayr
 
   This file is part of Monolith.
 
@@ -19,33 +19,26 @@
 
 
 #include "random.h"
-#include "bitboard.h"
+#include "bit.h"
 #include "magic.h"
 
 magic::entry magic::slider[2][64];
 
 std::vector<uint64> magic::attack_table;
-const int magic::table_size{ 107648 };
+
+const int magic::table_size{ 102400 + 5248 };
 
 const magic::pattern magic::ray[]
 {
-	{ 8,  0xff00000000000000 },{ 7,  0xff01010101010101 },
+	{  8, 0xff00000000000000 },{  7, 0xff01010101010101 },
 	{ 63, 0x0101010101010101 },{ 55, 0x01010101010101ff },
 	{ 56, 0x00000000000000ff },{ 57, 0x80808080808080ff },
-	{ 1,  0x8080808080808080 },{ 9,  0xff80808080808080 }
+	{  1, 0x8080808080808080 },{  9, 0xff80808080808080 }
 };
 
-namespace
+void magic::index_table()
 {
-	inline void real_shift(uint64 &bb, int shift)
-	{
-		bb = (bb << shift) | (bb >> (64 - shift));
-	}
-}
-
-void magic::init()
-{
-	// generating & indexing magic numbers
+	// indexing the attack table
 
 	attack_table.clear();
 	attack_table.resize(table_size);
@@ -56,31 +49,34 @@ void magic::init()
 	std::vector<uint64> blocker;
 	blocker.reserve(table_size);
 
+	// generating magic numbers & indexing their attack tables
+
 	for (int sl{ ROOK }; sl <= BISHOP; ++sl)
 	{
 		init_mask(sl);
 		init_blocker(sl, blocker);
 		init_move(sl, blocker, attack_temp);
 		init_magic(sl, blocker, attack_temp);
-		connect(sl, blocker, attack_temp);
+		init_index(sl, blocker, attack_temp);
 	}
 }
 
 void magic::init_mask(int sl)
 {
+	// generating corresponding ray masks for each square
+
 	assert(sl == ROOK || sl == BISHOP);
 
-	for (int sq{ 0 }; sq < 64; ++sq)
+	for (int sq{ H1 }; sq <= A8; ++sq)
 	{
-		uint64 sq64{ 1ULL << sq };
-
-		for (int dir{ sl }; dir < 8; dir += 2)
+		auto sq64{ 1ULL << sq };
+		for (auto dir{ sl }; dir < 8; dir += 2)
 		{
-			uint64 flood{ sq64 };
+			auto flood{ sq64 };
 			while (!(flood & ray[dir].boarder))
 			{
 				slider[sl][sq].mask |= flood;
-				real_shift(flood, ray[dir].shift);
+				bit::real_shift(flood, ray[dir].shift);
 			}
 		}
 		slider[sl][sq].mask ^= sq64;
@@ -89,118 +85,122 @@ void magic::init_mask(int sl)
 
 void magic::init_blocker(int sl, std::vector<uint64> &blocker)
 {
+	// generating all possible blocker boards for each square
+
 	assert(sl == ROOK || sl == BISHOP);
 	assert(blocker.size() == 0 || blocker.size() == 102400);
 
 	bool bit[12]{ false };
 
-	for (int sq{ 0 }; sq < 64; ++sq)
+	for (int sq{ H1 }; sq <= A8; ++sq)
 	{
 		slider[sl][sq].offset = blocker.size();
+		auto mask{ slider[sl][sq].mask };
 
-		uint64 mask_split[12]{ 0 };
-		int bits_in{ 0 };
-
-		uint64 mask_bit{ slider[sl][sq].mask };
-		while (mask_bit)
+		int bits_set{ };
+		uint64 split_mask[12]{ };
+		while (mask)
 		{
-			mask_split[bits_in++] = 1ULL << bb::bitscan(mask_bit);
-
-			mask_bit &= mask_bit - 1;
+			split_mask[bits_set++] = 1ULL << bit::scan(mask);
+			mask &= mask - 1;
 		}
-		assert(bits_in <= 12);
-		assert(bits_in >= 5);
-		assert(bb::popcnt(slider[sl][sq].mask) == bits_in);
 
-		slider[sl][sq].shift = 64 - bits_in;
+		assert(bits_set <= 12);
+		assert(bits_set >=  5);
+		assert(bit::popcnt(slider[sl][sq].mask) == bits_set);
 
-		int max{ 1 << bits_in };
-		for (int a{ 0 }; a < max; ++a)
+		slider[sl][sq].shift = 64 - bits_set;
+
+		// permuting through all possible combinations
+
+		auto permutations{ 1 << bits_set };
+		for (auto p{ 0 }; p < permutations; ++p)
 		{
-			uint64 board{ 0 };
-			for (int b{ 0 }; b < bits_in; ++b)
+			mask = 0ULL;
+			for (auto b{ 0 }; b < bits_set; ++b)
 			{
-				if (!(a % (1 << b)))
+				if (!(p % (1 << b)))
 					bit[b] = !bit[b];
+
 				if (bit[b])
-					board |= mask_split[b];
+					mask |= split_mask[b];
 			}
-			blocker.push_back(board);
+			blocker.push_back(mask);
 		}
 	}
 }
 
-void magic::init_move(int sl, std::vector<uint64> &blocker, std::vector<uint64> &attack_temp)
+void magic::init_move(int sl, std::vector<uint64> &blocker, std::vector<uint64> &attack)
 {
+	// generating all possible attacks from each square, considering the blocker boards
+
 	assert(sl == ROOK || sl == BISHOP);
-	assert(attack_temp.size() == 0 || attack_temp.size() == 102400);
+	assert(attack.size() == 0 || attack.size() == 102400);
 
-	for (int sq{ 0 }; sq < 64; ++sq)
+	for (int sq{ H1 }; sq <= A8; ++sq)
 	{
-		uint64 sq64{ 1ULL << sq };
+		auto sq64{ 1ULL << sq };
 
-		int max{ 1 << (64 - slider[sl][sq].shift) };
-		for (int cnt{ 0 }; cnt < max; ++cnt)
+		auto permutations{ 1 << (64 - slider[sl][sq].shift) };
+		for (auto p{ 0 }; p < permutations; ++p)
 		{
-			uint64 board{ 0 };
-
-			for (int dir{ sl }; dir < 8; dir += 2)
+			uint64 new_attack{ 0 };
+			for (auto dir{ sl }; dir < 8; dir += 2)
 			{
-				uint64 flood{ sq64 };
-				while (!(flood & ray[dir].boarder) && !(flood & blocker[slider[sl][sq].offset + cnt]))
+				auto flood{ sq64 };
+				auto stop{ ray[dir].boarder | blocker[slider[sl][sq].offset + p] };
+
+				while (!(flood & stop))
 				{
-					real_shift(flood, ray[dir].shift);
-					board |= flood;
+					bit::real_shift(flood, ray[dir].shift);
+					new_attack |= flood;
 				}
 			}
-			attack_temp.push_back(board);
+			attack.push_back(new_attack);
 
-			assert(attack_temp.size() - 1 == slider[sl][sq].offset + cnt);
+			assert(attack.size() - 1 == slider[sl][sq].offset + p);
 		}
 	}
 }
 
-void magic::init_magic(int sl, std::vector<uint64> &blocker, std::vector<uint64> &attack_temp)
+void magic::init_magic(int sl, std::vector<uint64> &blocker, std::vector<uint64> &attack)
 {
-	// pre-calculated seeds to speed up magic number generation
+	// finding fitting magic numbers
 
-	const uint64 seeds[]
+	// credits go to Tord Romstad:
+	// https://chessprogramming.wikispaces.com/Looking+for+Magics
+
+	assert(sl == ROOK || sl == BISHOP);
+	rand_64xor rand_gen;
+	bool fail{ };
+
+	for (int sq{ H1 }; sq <= A8; ++sq)
 	{
-		908859, 953436, 912753, 482262, 322368, 711868, 839234, 305746,
-		711822, 703023, 270076, 964393, 704635, 626514, 970187, 398854
-	};
+		auto permutations{ 1 << (64 - slider[sl][sq].shift) };
+		assert(permutations <= 4096);
 
-	// generating magic numbers, inspired by Tord Romstad
-
-	bool fail;
-	for (int sq{ 0 }; sq < 64; ++sq)
-	{
-		int occ_size{ 1 << (64 - slider[sl][sq].shift) };
-		assert(occ_size <= 4096);
-
-		std::vector<uint64> occ;
-		occ.resize(occ_size);
-
-		rand_xor rand_gen{ seeds[sq >> 2] };
-
+		std::vector<uint64> att;
+		rand_gen.new_magic_seed(sq >> 2);
 		do
 		{
-			do slider[sl][sq].magic = rand_gen.sparse64();
-			while (bb::popcnt((slider[sl][sq].mask * slider[sl][sq].magic) & 0xff00000000000000) < 6);
+			do
+			{
+				slider[sl][sq].magic = rand_gen.sparse64();
+			} while (bit::popcnt((slider[sl][sq].mask * slider[sl][sq].magic) & 0xff00000000000000) < 6);
 
 			fail = false;
-			occ.clear();
-			occ.resize(occ_size);
+			att.clear();
+			att.resize(permutations);
 
-			for (int i{ 0 }; !fail && i < occ_size; ++i)
+			for (auto p{ 0 }; !fail && p < permutations; ++p)
 			{
-				int idx{ static_cast<int>(blocker[slider[sl][sq].offset + i] * slider[sl][sq].magic >> slider[sl][sq].shift) };
-				assert(idx <= occ_size);
+				auto idx{ static_cast<int>(blocker[slider[sl][sq].offset + p] * slider[sl][sq].magic >> slider[sl][sq].shift) };
+				assert(idx <= permutations);
 
-				if (!occ[idx])
-					occ[idx] = attack_temp[slider[sl][sq].offset + i];
+				if (!att[idx])
+					att[idx] = attack[slider[sl][sq].offset + p];
 
-				else if (occ[idx] != attack_temp[slider[sl][sq].offset + i])
+				else if (att[idx] != attack[slider[sl][sq].offset + p])
 				{
 					fail = true;
 					break;
@@ -210,22 +210,19 @@ void magic::init_magic(int sl, std::vector<uint64> &blocker, std::vector<uint64>
 	}
 }
 
-void magic::connect(int sl, std::vector<uint64> &blocker, std::vector<uint64> &attack_temp)
+void magic::init_index(int sl, std::vector<uint64> &blocker, std::vector<uint64> &attack_temp)
 {
+	// using the created magic numbers to index the attack table
+
 	assert(sl == ROOK || sl == BISHOP);
 
-	for (int sq{ 0 }; sq < 64; ++sq)
+	for (int sq{ H1 }; sq <= A8; ++sq)
 	{
-		int max{ 1 << (64 - slider[sl][sq].shift) };
-
-		for (int cnt{ 0 }; cnt < max; ++cnt)
+		auto permutations{ 1 << (64 - slider[sl][sq].shift) };
+		for (auto p{ 0 }; p < permutations; ++p)
 		{
-			attack_table
-			[
-				static_cast<uint32>(slider[sl][sq].offset
-					+ (blocker[slider[sl][sq].offset + cnt] * slider[sl][sq].magic >> slider[sl][sq].shift))
-			]
-			= attack_temp[slider[sl][sq].offset + cnt];
+			attack_table[static_cast<uint32>(slider[sl][sq].offset + (blocker[slider[sl][sq].offset + p] * slider[sl][sq].magic >> slider[sl][sq].shift))]
+			= attack_temp[slider[sl][sq].offset + p];
 		}
 	}
 }

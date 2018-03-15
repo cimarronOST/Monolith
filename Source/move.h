@@ -20,33 +20,41 @@
 
 #pragma once
 
-#include "position.h"
 #include "main.h"
 
-// bitboard attacking functions
+// concerning move encoding
 
-class attack
+namespace move
 {
-public:
+	// encoding a move into 32 bits
 
-	// attacking bitboards
+	struct elements
+	{
+		int sq1;
+		int sq2;
+		int flag;
+		int piece;
+		int victim;
+		int turn;
+	};
 
-	static uint64 in_front[2][64];
-	static uint64 slide_map[2][64];
-	static uint64 knight_map[64];
-	static uint64 king_map[64];
+	int sq1(uint32 move);
+	int sq2(uint32 move);
+	int flag(uint32 move);
+	int piece(uint32 move);
+	int victim(uint32 move);
+	int turn(uint32 move);
 
-	static void fill_tables();
+	elements decode(uint32 move);
+	uint32 encode(int sq1, int sq2, int flag, int piece, int victim, int turn);
 
-	// detecting check & generating attacks
+	// determining some move properties
 
-	static uint64 check(const board &pos, int turn, uint64 all_sq);
+	bool is_castling(int flag);
+	bool is_castling(uint32 move);
+	bool is_promo(uint32 move);
+	bool is_quiet(uint32 move);
 
-	template<sliding_type sl> static uint64 by_slider(int sq, uint64 occ);
-	static uint64 by_pawns(const board &pos, int turn);
-
-	// assisting SEE
-
-	static uint64 to_square(const board &pos, int sq);
-	static uint64 add_xray(const board &pos, int sq, uint64 &occ);
-};
+	bool is_push_to_7th(uint32 move);
+	bool is_pawn_advance(uint32 move);
+}

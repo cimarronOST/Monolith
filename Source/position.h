@@ -1,5 +1,5 @@
 /*
-  Monolith 0.3  Copyright (C) 2017 Jonas Mayr
+  Monolith 0.4  Copyright (C) 2017 Jonas Mayr
 
   This file is part of Monolith.
 
@@ -22,9 +22,9 @@
 
 #include "main.h"
 
-// representing the board's position and all game states
+// representing the board position and all board states
 
-class pos
+class board
 {
 public:
 
@@ -33,33 +33,50 @@ public:
 	uint64 pieces[6];
 	uint64 side[3];
 	uint8 piece_sq[64];
-	int king_sq[2];
+	uint8 king_sq[2];
 
 	// representing all other positional essentials
 
 	int move_cnt;
 	int half_move_cnt;
 	int turn;
-	int not_turn;
+	int xturn;
 	uint64 ep_sq;
-	bool castl_rights[4];
+	uint8 castling_right[4];
 
-	// helping parameters for search & evaluation
+	// keeping search & evaluation parameters updated with every move
 
 	uint64 key;
+	uint64 pawn_key;
 	uint16 capture;
-	uint8 phase;
 
-	// manipulating the position
+	// setting up new position
 
 	void parse_fen(std::string fen);
-	void new_move(uint32 move);
-	void null_move(uint64 &ep_copy, uint16 &capt_copy);
-	void undo_null_move(uint64 &ep_copy, uint16 &capt_copy);
+	uint8 get_rook_sq(int col, int dir) const;
 
-	void rook_moved(uint64 &sq64, uint16 sq);
+	// moving
+
+	void new_move(uint32 move);
+	void revert(board &prev_pos);
+	void null_move(uint64 &ep_copy, uint16 &capture_copy);
+	void revert_null_move(uint64 &ep_copy, uint16 &capture_copy);
+
+private:
+
+	void rook_is_engaged(int sq, int piece);
+	void rook_castling(int sq1, int sq2);
 	void clear();
 
+public:
+
+	// giving additional information to the search
+
+	bool check() const;
 	bool lone_king() const;
 	bool recapture(uint32 move) const;
+
+	// checking for pseudo-legality
+
+	bool pseudolegal(uint32 move) const;
 };

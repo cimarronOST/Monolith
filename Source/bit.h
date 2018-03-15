@@ -20,33 +20,40 @@
 
 #pragma once
 
-#include "position.h"
 #include "main.h"
 
-// bitboard attacking functions
+// bitwise operations & constants
+// supporting specific hardware instructions to speed up bitboard operations
 
-class attack
+namespace bit
 {
-public:
+	const uint64 file[]
+	{
+		0x0101010101010101ULL,
+		0x0202020202020202ULL,
+		0x0404040404040404ULL,
+		0x0808080808080808ULL,
+		0x1010101010101010ULL,
+		0x2020202020202020ULL,
+		0x4040404040404040ULL,
+		0x8080808080808080ULL
+	};
 
-	// attacking bitboards
+	const uint64 rank[]
+	{
+		0xffULL << 0,
+		0xffULL << 8,
+		0xffULL << 16,
+		0xffULL << 24,
+		0xffULL << 32,
+		0xffULL << 40,
+		0xffULL << 48,
+		0xffULL << 56
+	};
 
-	static uint64 in_front[2][64];
-	static uint64 slide_map[2][64];
-	static uint64 knight_map[64];
-	static uint64 king_map[64];
+	uint64 shift(uint64 b, int shift);
+	void real_shift(uint64 &b, int shift);
 
-	static void fill_tables();
-
-	// detecting check & generating attacks
-
-	static uint64 check(const board &pos, int turn, uint64 all_sq);
-
-	template<sliding_type sl> static uint64 by_slider(int sq, uint64 occ);
-	static uint64 by_pawns(const board &pos, int turn);
-
-	// assisting SEE
-
-	static uint64 to_square(const board &pos, int sq);
-	static uint64 add_xray(const board &pos, int sq, uint64 &occ);
-};
+	int popcnt(uint64 b);
+	unsigned long scan(uint64 b);
+}

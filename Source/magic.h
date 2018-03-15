@@ -1,5 +1,5 @@
 /*
-  Monolith 0.3  Copyright (C) 2017 Jonas Mayr
+  Monolith 0.4  Copyright (C) 2017 Jonas Mayr
 
   This file is part of Monolith.
 
@@ -24,7 +24,7 @@
 
 #include "main.h"
 
-// setting up the magic index function for fast move-generation of sliding pieces
+// setting up the magic index function for fast move generation of sliding pieces
 
 class magic
 {
@@ -32,13 +32,17 @@ private:
 
 	struct entry
 	{
-		size_t offset;
+		uint64 offset;
 		uint64 mask;
 		uint64 magic;
 		int shift;
 	};
 
+	static const int table_size;
+
 public:
+
+	// confining the attacking rays depending on piece and direction
 
 	struct pattern
 	{
@@ -46,25 +50,24 @@ public:
 		uint64 boarder;
 	};
 
-	// variables to fill
+	static const pattern ray[];
+
+	// holding all magic information after the initialisation
 
 	static entry slider[2][64];
 
 	static std::vector<uint64> attack_table;
 
-	static const int table_size;
-	static const pattern ray[];
+	// indexing magic number attack tables
 
-	// generating & indexing magic numbers
-
-	static void init();
+	static void index_table();
 
 private:
 
 	static void init_mask(int sl);
 	static void init_blocker(int sl, std::vector<uint64> &blocker);
-	static void init_move(int sl, std::vector<uint64> &blocker, std::vector<uint64> &attack_temp);
+	static void init_move(int sl, std::vector<uint64> &blocker, std::vector<uint64> &attack);
 
-	static void init_magic(int sl, std::vector<uint64> &blocker, std::vector<uint64> &attack_temp);
-	static void connect(int sl, std::vector<uint64> &blocker, std::vector<uint64> &attack_temp);
+	static void init_magic(int sl, std::vector<uint64> &blocker, std::vector<uint64> &attack);
+	static void init_index(int sl, std::vector<uint64> &blocker, std::vector<uint64> &attack);
 };

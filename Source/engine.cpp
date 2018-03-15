@@ -1,5 +1,5 @@
 /*
-  Monolith 0.3  Copyright (C) 2017 Jonas Mayr
+  Monolith 0.4  Copyright (C) 2017 Jonas Mayr
 
   This file is part of Monolith.
 
@@ -18,164 +18,181 @@
 */
 
 
-#include "hash.h"
-#include "evaluation.h"
+#include "zobrist.h"
+#include "trans.h"
+#include "eval.h"
 #include "search.h"
 #include "book.h"
-#include "logfile.h"
+#include "stream.h"
 #include "magic.h"
-#include "movegen.h"
+#include "attack.h"
 #include "engine.h"
 
-// internal values
-
 const std::string engine::startpos
-{
-	"rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1"
-};
+{ "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1" };
 
-bool engine::stop{ true };
-int engine::move_cnt;
-
-uint32 engine::movelist[lim::period];
-uint64 engine::hashlist[lim::period];
-
-// independent values
+// values depending on the UCI 'setoption' command
 
 int engine::hash_size{ 128 };
-int engine::contempt{ 0 };
+int engine::multipv{ 1 };
+int engine::overhead{ 0 };
+int engine::contempt[]{ 0, 0 };
+
+bool engine::ponder{ false };
+bool engine::chess960{ false };
+bool engine::use_book{ true };
 bool engine::best_book_line{ false };
 
-// values dependent on UCI input
+// values depending on the UCI 'go' command
 
 bool engine::infinite{ false };
-int engine::depth;
-uint64 engine::nodes;
 
-// values dependent on file placement
+engine::search_limit engine::limit;
 
-bool engine::use_book;
+// values depending on various other things
 
-namespace
+int engine::move_cnt{ 0 };
+int engine::move_offset{ 0 };
+
+uint64 engine::quiet_hash[256]{ };
+
+bool engine::stop{ true };
+bool engine::book_move{ true };
+
+// main transposition table
+
+namespace hash
 {
-	// transposition table
-
-	tt table(engine::hash_size);
+	trans table(engine::hash_size);
 }
 
-void engine::new_game(pos &board)
+void engine::new_game(board &pos)
 {
-	use_book = true;
-	table.reset();
+	// responding to the UCI 'ucinewgame' command
 
-	parse_fen(board, startpos);
+	book_move = { use_book ? true : false };
+	hash::table.clear();
+	set_position(pos, startpos);
 }
 
-void engine::new_move(pos &board, uint32 move)
+void engine::new_move(board &pos, uint32 move)
 {
-	board.new_move(move);
-	save_move(board, move);
+	pos.new_move(move);
+	save_move(pos);
 }
 
-void engine::parse_fen(pos &board, std::string fen)
+void engine::set_position(board &pos, std::string fen)
 {
-	reset_game();
-	board.parse_fen(fen);
+	// reacting to the UCI 'position' command
+
+	pos.parse_fen(fen);
+	reset_game(pos);
 }
 
-void engine::reset_game()
+void engine::reset_game(const board &pos)
 {
 	move_cnt = 0;
-
-	for (auto &m : movelist) m = NO_MOVE;
-	for (auto &h : hashlist) h = 0ULL;
+	move_offset = 0;
+	for (auto &h : quiet_hash) h = 0ULL;
+	quiet_hash[move_offset] = pos.key;
 }
 
-void engine::save_move(const pos &board, uint32 move)
+void engine::save_move(const board &pos)
 {
-	movelist[move_cnt] = move;
-	hashlist[move_cnt] = board.key;
+	// keeping track of the half move count & transpositions to detect repetitions
+
+	move_offset = { pos.half_move_cnt ? move_offset + 1 : 0 };
 	move_cnt += 1;
+	assert(move_offset <= pos.half_move_cnt);
+
+	quiet_hash[move_offset] = pos.key;
 }
 
 void engine::init_magic()
 {
-	magic::init();
+	magic::index_table();
 }
 
-void engine::init_movegen()
+void engine::init_attack()
 {
-	movegen::init_ray(ROOK);
-	movegen::init_ray(BISHOP);
-	movegen::init_king();
-	movegen::init_knight();
-}
-
-void engine::init_path(char *argv[])
-{
-	log_file::set_path(argv);
-	log_file::open();
+	attack::fill_tables();
 }
 
 void engine::init_book()
 {
-	// assuming path is already established
-
-	if (book::open())
-		use_book = true;
-	else
-		use_book = false;
+	book_move = book::open();
 }
 
-uint32 engine::get_book_move(pos &board)
+uint32 engine::get_book_move(board &pos)
 {
-	return book::get_move(board, best_book_line);
+	return book::get_move(pos, best_book_line);
 }
 
 std::string engine::get_book_name()
 {
-	return book::book_name;
+	return book::name;
 }
 
 void engine::new_book(std::string new_name)
 {
-	book::book_name = new_name;
+	// executing the UCI setoption 'Book File' command
+
+	book::name = new_name;
 	init_book();
+}
+
+void engine::init_path(char *argv[])
+{
+	// initialising the directory path for book- & logfile
+
+	filestream::set_path(argv);
+	filestream::open();
 }
 
 void engine::new_hash_size(int size)
 {
-	hash_size = table.create(size);
+	// executing the UCI setoption 'Hash' command
+
+	hash_size = hash::table.create(size);
 }
 
 void engine::clear_hash()
 {
-	table.reset();
+	// executing the UCI setoption 'Clear Hash' command
+
+	hash::table.clear();
 }
 
-uint32 engine::start_searching(pos &board, chronos &chrono, uint32 &ponder)
+void engine::init_zobrist()
 {
+	zobrist::init_keys();
+}
+
+uint32 engine::start_searching(board &pos, uint64 time, uint32 &ponder)
+{
+	// starting the search after the UCI 'go' command
+
 	analysis::reset();
-	return search::id_frame(board, chrono, ponder);
+	return search::id_frame(pos, time, ponder);
 }
 
-void engine::stop_ponder()
+void engine::search_summary()
 {
-	infinite = false;
-	search::stop_ponder();
+	// outputting some statistics from the previous search
+	// called by the 'summary' command
+
+	analysis::summary();
 }
 
 void engine::init_eval()
 {
-	eval::init();
+	eval::fill_tables();
 }
 
-void engine::eval(pos &board)
+void engine::eval(board &pos)
 {
-	// doing a static evaluation of the current position
-	// for debugging purpose
+	// doing a itemised evaluation of the current position
+	// called by the 'eval' command for debugging purpose
 
-	log::cout << "total evaluation: " << eval::static_eval(board)
-		<< " cp (" << (board.turn == WHITE ? "white's" : "black's") << " point of view)"
-		<< std::endl;
+	eval::itemise_eval(pos);
 }
