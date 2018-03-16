@@ -7,7 +7,8 @@ Monolith is a open source UCI-compliant chess engine written in C++11 by a not t
 who prefers to invest his extra time into computer chess rather than to seek better grades.
 It's simply much more fun.
 
-Monolith is not a standalone chess programm, but needs a GUI in order to be used properly, for example [Arena](http://www.playwitharena.com).
+Monolith is not a standalone chess programm, but needs a GUI in order to be used properly,
+for example [Arena](http://www.playwitharena.com) or [Cute Chess](https://github.com/cutechess/cutechess).
 Huge credits go to the [Chess Programming Wiki](https://chessprogramming.wikispaces.com) and to the equally fantastic [www.talkchess.com](http://www.talkchess.com).
 Without them this little project would have never been possible.
 
@@ -22,7 +23,7 @@ Without them this little project would have never been possible.
 
 ## Strenght
 Monolith 0.3 achieved more than 2400 Elo on both [CCRL 40/4](http://www.computerchess.org.uk/ccrl/404/index.html) and [CCRL 40/40](http://www.computerchess.org.uk/ccrl/4040/index.html).
-Monolith 0.4 showed an improvement of about 200 Elo over Monolith 0.3 in bullet games.
+Monolith 0.4 showed an improvement of about 170 Elo over Monolith 0.3 in bullet games.
 
 
 ## Main changes to the previous version
@@ -37,13 +38,13 @@ Monolith 0.4 showed an improvement of about 200 Elo over Monolith 0.3 in bullet 
 
 
 ## Which executable to use
-- **x64** is the fastest
-- **x64_no_popcnt** does not need modern CPU instruction sets, therefore runs also on older computers, but is a bit slower
-- **x86** runs also on 32-bit computers, but is considerably slower because there is no dedicated code for 32-bit instruction sets
+- **x64** is the fastest.
+- **x64_no_popcnt** does not need modern CPU instruction sets, therefore runs also on older computers, but is a bit slower.
+- **x86** runs also on 32-bit computers, but is considerably slower because there is no dedicated code for 32-bit instruction sets.
 
 
 ### If you compile it yourself
-A makefile will be added soon. Running the 'bench' command should result in a total of _40813238_ nodes.
+A makefile is included. Running the 'bench' command should result in a total of **40813238** nodes.
 
 
 ## UCI options overview
@@ -62,7 +63,7 @@ A makefile will be added soon. Running the 'bench' command should result in a to
 ### Additional unofficial commands
 - 'bench': Running a benchmark consisting of a set of positions.
 - 'perft legal': Running a performance test on some positions, using the legal move-generator.
-- 'perft pseudo': Running the performance test using the pseudo-legal move-generator.
+- 'perft pseudo': Running the same performance test using the pseudo-legal move-generator.
 - 'eval': Outputting the detailed static evaluation of the current position.
 - 'board': Showing the board.
 - 'summary': Showing some statistics about the previous search.
