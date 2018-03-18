@@ -28,13 +28,19 @@ uint64 chronomanager::get_movetime(int turn)
 	if (infinite)
 		return movetime - engine::overhead;
 
-	auto max_time{ time[turn] + incr[turn] * moves_to_go };
+	auto max_time{ time[turn] + incr[turn] * (moves_to_go - 1) - engine::overhead };
 	auto target_time{ time[turn] / moves_to_go + incr[turn] - engine::overhead };
 
-	if (engine::ponder)
-		target_time = std::min(target_time * 4 / 3, max_time);
+	// assuming that more time is available through ponderhits
 
-	movetime = target_time - target_time / 20 - incr[turn] / (moves_to_go + 1);
+	if (engine::ponder)
+		target_time = target_time * 4 / 3;
+
+	// applying a safety margin
+	// considering also bullet time controls
+
+	target_time = std::min(target_time, max_time);
+	movetime = target_time - std::min(target_time / 20, 50);
 
 	return std::max(movetime, 1ULL);
 }
