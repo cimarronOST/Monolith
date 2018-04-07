@@ -22,8 +22,8 @@ Without them this little project would have never been possible.
 
 
 ## Strenght
-Monolith 0.3 achieved more than 2400 Elo on both [CCRL 40/4](http://www.computerchess.org.uk/ccrl/404/index.html) and [CCRL 40/40](http://www.computerchess.org.uk/ccrl/4040/index.html).
-Monolith 0.4 showed an improvement of about 170 Elo over Monolith 0.3 in bullet games.
+Monolith 0.4 achieved almost 2600 Elo on both [CCRL 40/4](http://www.computerchess.org.uk/ccrl/404/index.html) and [CCRL 40/40](http://www.computerchess.org.uk/ccrl/4040/index.html).
+That's an improvement of about 180 Elo over Monolith 0.3.
 
 
 ## Main changes to the previous version
