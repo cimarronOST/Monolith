@@ -452,7 +452,7 @@ namespace tbcore
 		if (!map)
 		{
 			sync::cout << "info string warning: CreateFileMapping() failed, name = " << filename << std::endl;
-			throw;
+			throw STOP_TABLEBASE;
 		}
 		mapping = (uint64)map;
 
@@ -461,7 +461,7 @@ namespace tbcore
 		{
 			sync::cout << "info string warning: MapViewOfFile() failed, name = " << filename
 				<< ", error = " << GetLastError() << std::endl;
-			throw;
+			throw STOP_TABLEBASE;
 		}
 		CloseHandle(fd);
 #else
@@ -482,7 +482,7 @@ namespace tbcore
 		if (data == (int8*)(-1))
 		{
 			sync::cout << "info string warning: mmap() failed, name = " << filename << std::endl;
-			throw;
+			throw STOP_TABLEBASE;
 		}
 		close(fd);
 #endif
@@ -518,7 +518,7 @@ namespace tbcore
 			}
 		}
 		sync::cout << "info string warning: tablebase hash limit too low" << std::endl;
-		throw;
+		throw STOP_TABLEBASE;
 	}
 
 	void init(std::vector<int> pieces)
@@ -575,12 +575,18 @@ namespace tbcore
 		{
 			piece_list[TB_PAWN_WHITE] + piece_list[TB_PAWN_BLACK] == 0
 			? (tb_entry*)&tb_piece[tb_count.pieces++]
-			: (tb_entry*)&tb_pawn[tb_count.pieces++]
+			: (tb_entry*)&tb_pawn[tb_count.pawns++]
 		};
-		if (tb_count.pieces == TB_MAX_PIECE || tb_count.pawns == TB_MAX_PAWN)
+
+		if (tb_count.pieces == TB_MAX_PIECE)
 		{
-			sync::cout << "info string warning: tablebase piece/pawn-limit too low" << std::endl;
-			throw;
+			sync::cout << "info string warning: tablebase piece-limit too low" << std::endl;
+			throw STOP_TABLEBASE;
+		}
+		if (tb_count.pawns == TB_MAX_PAWN)
+		{
+			sync::cout << "info string warning: tablebase pawn-limit too low" << std::endl;
+			throw STOP_TABLEBASE;
 		}
 
 		entry->key = key;
@@ -1095,7 +1101,11 @@ namespace tbcore
 		// memory-mapping the file first
 
 		try { entry->data = map(acronym + wdl_suffix, entry->mapping); }
-		catch (...) { return false; }
+		catch (exception_type &ex)
+		{
+			assert(ex == STOP_TABLEBASE);
+			return false;
+		}
 
 		if (!entry->data)
 		{
@@ -1459,9 +1469,9 @@ namespace tbcore
 			ptr_new->symmetric = ptr->symmetric;
 			ptr_new->has_pawns = ptr->has_pawns;
 		}
-		catch (...)
+		catch (exception_type &ex)
 		{
-			assert(false);
+			assert(ex == STOP_TABLEBASE);
 			free(ptr_new);
 			return;
 		}
@@ -1924,8 +1934,9 @@ void syzygy::init_tablebases(std::string &path)
 		tablebases = tb_count.pieces + tb_count.pawns;
 		sync::cout << "info string " << tablebases << " tablebases were found" << std::endl;
 	}
-	catch (...)
+	catch (exception_type &ex)
 	{
+		assert(ex == STOP_TABLEBASE);
 		sync::cout << "info string warning: tablebases could not be initalized" << std::endl;
 	}
 }
