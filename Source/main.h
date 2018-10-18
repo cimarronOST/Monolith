@@ -194,6 +194,10 @@ enum bound_type
 	LOWER = 3
 };
 
-enum exception_type{ STOP_SEARCHING = 1 };
+enum exception_type
+{
+	STOP_SEARCHING = 1,
+	STOP_TABLEBASE = 2
+};
 
 enum index_type{ MAIN };
