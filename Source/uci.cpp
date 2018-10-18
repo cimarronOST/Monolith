@@ -41,7 +41,7 @@ int uci::multipv{ 1 };
 int uci::overhead{};
 int uci::contempt[]{ SCORE_DRAW, SCORE_DRAW };
 
-struct uci::syzygy_settings uci::syzygy{ "<empty>", 1, lim::syzygy_pieces, true };
+struct uci::syzygy_settings uci::syzygy{ "<empty>", 5, lim::syzygy_pieces, true };
 
 bool uci::ponder  { false };
 bool uci::chess960{ false };
