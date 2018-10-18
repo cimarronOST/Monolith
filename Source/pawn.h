@@ -1,5 +1,5 @@
 /*
-  Monolith 0.4  Copyright (C) 2017 Jonas Mayr
+  Monolith 1.0  Copyright (C) 2017-2018 Jonas Mayr
 
   This file is part of Monolith.
 
@@ -24,9 +24,17 @@
 #include "main.h"
 
 // managing the pawn hash table
+// the pawn hash table speeds up the evaluation function
 
 class pawn
 {
+private:
+
+	// size of { 1ULL << 11 } correlates to a fixed pawn-hash table of ~65 KB per thread
+
+	constexpr static uint64 size{ 1ULL << 11 };
+	void clear();
+
 public:
 
 	// pawn hash entry is 32 bytes
@@ -36,26 +44,26 @@ public:
 		uint64 key;
 		uint64 passed[2];
 		int16 score[2][2];
-		void clear();
 	};
 
-	static_assert(sizeof(hash) == 32, "pawnhash entry > 32 bytes");
+	static_assert(sizeof(hash) == 32, "pawnhash entry != 32 bytes");
 
 	// actual table & properties
 
-	static hash *table;
-
-	const static uint64 size;
-	const static uint64 mask;
+	hash *table{};
+	constexpr static uint64 mask{ size - 1 };
 
 	static uint64 to_key(const board &pos);
 
 	// creating & destroying the table
 
-	pawn()
+	pawn(bool allocate)
 	{
-		table = new hash[size];
-		clear();
+		if (allocate)
+		{
+			table = new hash[static_cast<uint32>(size)];
+			clear();
+		}
 	}
 
 	~pawn()
@@ -66,6 +74,4 @@ public:
 			table = nullptr;
 		}
 	}
-
-	void clear();
 };

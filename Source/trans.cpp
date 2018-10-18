@@ -1,5 +1,5 @@
 /*
-  Monolith 0.4  Copyright (C) 2017 Jonas Mayr
+  Monolith 1.0  Copyright (C) 2017-2018 Jonas Mayr
 
   This file is part of Monolith.
 
@@ -18,56 +18,103 @@
 */
 
 
+#include "utilities.h"
 #include "attack.h"
 #include "zobrist.h"
 #include "bit.h"
-#include "engine.h"
+#include "uci.h"
 #include "trans.h"
 
-trans::hash* trans::table{ nullptr };
+struct trans::hash* trans::table{};
 
-uint64 trans::hash_hits{ };
-uint64 trans::size{ };
-uint64 trans::mask{ };
+uint64 trans::hash_hits{};
+uint64 trans::size{};
+uint64 trans::mask{};
 
-namespace
+namespace get
 {
-	const int slots{ 4 };
+	// encoding & decoding the compressed data of the 8-byte hash-entry
+
+	uint64 data(int score, uint32 move, int depth, int bound, int age)
+	{
+		assert(score > -SCORE_MATE && score < SCORE_MATE);
+		assert(move  >> 24 == 0U);
+		assert(depth >= 0 && depth <= lim::depth);
+		assert(bound == EXACT || bound == UPPER || bound == LOWER);
+		assert(age   >= 0);
+		return (static_cast<uint64>(score - SCORE_NONE) << 48)
+			 | (static_cast<uint64>(move)  << 24)
+			 | (static_cast<uint64>(depth) << 17)
+			 | (static_cast<uint64>(bound) << 15)
+			 | (static_cast<uint64>(age) & 0x7fff);
+	}
+
+	int score(uint64 &data)
+	{
+		int score{ static_cast<int>(data >> 48) + SCORE_NONE };
+		assert(score > -SCORE_MATE && score < SCORE_MATE);
+		return score;
+	}
+
+	uint32 move(uint64 &data)
+	{
+		return static_cast<uint32>(data >> 24) & 0xffffffU;
+	}
+
+	int depth(uint64 &data)
+	{
+		int depth{ static_cast<int>(data >> 17) & 0x7f };
+		assert(depth <= lim::depth);
+		return depth;
+	}
+
+	int bound(uint64 &data)
+	{
+		int bound{ static_cast<int>(data >> 15) & 0x3 };
+		assert(bound == EXACT || bound == UPPER || bound == LOWER);
+		return bound;
+	}
+
+	int age(uint64 &data)
+	{
+		return static_cast<int>(data & 0x7fff);
+	}
 }
 
-namespace
+namespace update
 {
-	void replace(trans::hash *entry, const board &pos, uint32 move, int score, int bound, int depth)
+	void age(uint64 &data, int new_age)
 	{
-		// replacing a table entry
+		// updating the entry's age at every hash hit
 
-		entry->key = pos.key;
-		entry->score = score;
-		entry->bounds = (bound << 14) | (engine::move_cnt & 0x3fff);
-		entry->move = move;
-		entry->annex = static_cast<uint8>(move >> 16);
-		entry->depth = static_cast<uint8>(depth);
+		data &= 0xffffffffffff8000;
+		data |= new_age & 0x7fff;
+	}
+
+	void key(uint64 &key, uint64 &data, const uint64 &pos_key)
+	{
+		// updating the key whenever data changes
+
+		key = pos_key ^ data;
 	}
 }
 
 int trans::create(uint64 size_mb)
 {
-	// building a transposition table of <size_mb> megabyte
+	// building a transposition table of <size_mb> megabytes
 
 	assert(size_mb <= lim::hash);
+	auto boundary{ (size_mb << 20) / sizeof(hash) / 2 };
+	for (size = 1ULL; size <= boundary; size <<= 1);
 
 	erase();
-	auto size_final{ ((size_mb << 20) / sizeof(hash)) >> 1 };
-	size = 1ULL;
-	for (; size <= size_final; size <<= 1);
-	mask = size - slots;
-
 	table = new hash[size];
 	clear();
-	size_final = (size * sizeof(hash)) >> 20;
+	mask = size - slots;
 
-	assert(size_final <= size_mb);
-	return static_cast<int>(size_final);
+	auto final_size_mb{ (size * sizeof(hash)) >> 20 };
+	assert(final_size_mb <= size_mb);
+	return static_cast<int>(final_size_mb);
 }
 
 void trans::erase()
@@ -85,87 +132,85 @@ void trans::clear()
 {
 	// resetting the transposition table to zero
 
-	for (auto i{ 0U }; i < size; ++i)
-		table[i] = { 0ULL, NO_SCORE, 0U, NO_MOVE, 0U, 0U };
+	for (uint32 i{}; i < size; ++i)
+		table[i] = hash{};
 }
 
 uint64 trans::to_key(const board &pos)
 {
-	// creating a hash key through the board position
+	// creating a hash key of the board position
 
-	uint64 key{ 0ULL };
+	uint64 key{};
 
-	// xor all pieces
+	// considering all pieces
 
-	for (int col{ WHITE }; col <= BLACK; ++col)
+	for (int color{ WHITE }; color <= BLACK; ++color)
 	{
-		auto pieces{ pos.side[col] };
+		auto pieces{ pos.side[color] };
 		while (pieces)
 		{
 			auto sq{ bit::scan(pieces) };
-			assert(pos.piece_sq[sq] != NONE);
+			assert(pos.piece[sq] != NONE);
 
-			key ^= zobrist::rand_key[(pos.piece_sq[sq] * 2 + col) * 64 + sq];
+			key ^= zobrist::rand_key[(pos.piece[sq] * 2 + color) * 64 + sq];
 			pieces &= pieces - 1;
 		}
 	}
 
-	// xor castling rights
+	// considering castling rights
 
-	for (auto i{ 0 }; i < 4; ++i)
+	for (int i{}; i < 4; ++i)
 	{
 		if (pos.castling_right[i] != PROHIBITED)
 			key ^= zobrist::rand_key[zobrist::off.castling + i];
 	}
 
-	// xor enpassant square
+	// considering en-passant square only if a capturing pawn stands ready
 
-	if (pos.ep_sq)
+	if (pos.ep_rear)
 	{
-		auto ep_idx{ bit::scan(pos.ep_sq) };
+		assert(bit::shift(pos.ep_rear, shift::push[pos.xturn]) & pos.pieces[PAWNS] & pos.side[pos.xturn]);
 
-		if (pos.pieces[PAWNS] & pos.side[pos.turn] & attack::king_map[ep_idx] & (bit::rank[R4] | bit::rank[R5]))
-			key ^= zobrist::rand_key[zobrist::off.ep + square::file(ep_idx)];
+		auto ep_index{ bit::scan(pos.ep_rear) };
+		if (pos.pieces[PAWNS] & pos.side[pos.turn] & attack::king_map[ep_index] & (bit::rank[R4] | bit::rank[R5]))
+			key ^= zobrist::rand_key[zobrist::off.ep + index::file(ep_index)];
 	}
 
-	// xor side to play
+	// considering side to move
 
 	key ^= zobrist::rand_key[zobrist::off.turn] * pos.xturn;
 
 	return key;
 }
 
-void trans::store(const board &pos, uint32 move, int score, int bound, int depth, int curr_depth)
+void trans::store(uint64 &key, uint32 move, int score, int bound, int depth, int curr_depth)
 {
-	// storing a transposition in the table
+	// storing a transposition in the hash table
 
-	assert(abs(score) <= MAX_SCORE);
-	assert(bound != 0);
-	assert(depth <= lim::depth);
-	assert(depth >= 0);
-	assert(curr_depth <= lim::depth);
-	assert(curr_depth >= 0);
+	assert(std::abs(score) <= SCORE_MATE);
+	assert(0 <= curr_depth && curr_depth <= lim::depth);
 
 	// adjusting mate scores
 
 	if (bound == EXACT)
 	{
-		if (score >  MATE_SCORE) score += curr_depth;
-		if (score < -MATE_SCORE) score -= curr_depth;
+		if (score >  SCORE_LONGEST_MATE) score += curr_depth;
+		if (score < -SCORE_LONGEST_MATE) score -= curr_depth;
 	}
 
 	// probing the table slots
 
-	hash* entry{ &table[pos.key & mask] };
-	hash* new_entry{ nullptr };
+	hash* entry{ &table[key & mask] };
+	hash* new_entry{};
 
-	auto low_score{ lim::depth + (engine::move_cnt << 8) };
+	auto max_score{ lim::depth + (uci::move_count << 8) };
+	auto low_score{ max_score };
 
-	for (auto i{ 0 }; i < slots; ++i, ++entry)
+	for (int i{}; i < slots; ++i, ++entry)
 	{
 		// always replacing an already existing entry
 
-		if (entry->key == pos.key || entry->key == 0ULL)
+		if ((entry->key ^ entry->data) == key || entry->key == 0ULL)
 		{
 			new_entry = entry;
 			break;
@@ -173,63 +218,64 @@ void trans::store(const board &pos, uint32 move, int score, int bound, int depth
 
 		// looking for the oldest and shallowest entry
 
-		auto new_score{ entry->depth + ((entry->bounds & 0x3fff) << 8) };
-
-		assert(entry->depth <= lim::depth);
-		assert(new_score  <= lim::depth + (engine::move_cnt << 8));
-
-		if (new_score < low_score)
+		auto new_score{ get::depth(entry->data) + (get::age(entry->data) << 8) };
+		if  (new_score <= low_score)
 		{
 			low_score = new_score;
 			new_entry = entry;
+		}
+
+		// always replacing "entries from the future" in case of moving backwards through a game while analyzing
+		// and the hash has not been cleared
+
+		else if (new_score > max_score)
+		{
+			new_entry = entry;
+			break;
 		}
 	}
 
 	// replacing the oldest and shallowest entry
 
-	assert (new_entry != nullptr);
-	replace(new_entry, pos, move, score, bound, depth);
+	assert(new_entry);
+	new_entry->data = get::data(score, move, depth, bound, uci::move_count);
+	update::key(new_entry->key, new_entry->data, key);
 }
 
-bool trans::probe(const board &pos, uint32 &move, int &score, int &bound, int depth, int curr_depth)
+bool trans::probe(uint64 &key, entry &node, int depth, int curr_depth)
 {
 	// looking for a hash key match of the current position & retrieving the entry
 
-	move  = NO_MOVE;
-	score = NO_SCORE;
-	bound = 0;
-	hash* entry{ &table[pos.key & mask] };
+	node = { MOVE_NONE, SCORE_NONE, 0, 0 };
+	hash* entry{ &table[key & mask] };
 
-	for (auto i{ 0 }; i < slots; ++i, ++entry)
+	for (int i{}; i < slots; ++i, ++entry)
 	{
-		if (entry->key == pos.key)
+		if ((entry->key ^ entry->data) == key)
 		{
 			hash_hits += 1;
+			update::age(entry->data, uci::move_count);
+			update::key(entry->key, entry->data, key);
+			
+			node.move  = get::move(entry->data);
+			node.bound = get::bound(entry->data);
+			node.depth = get::depth(entry->data);
 
-			entry->bounds &= 0xc000;
-			entry->bounds |= (engine::move_cnt & 0x3fff);
-			move = entry->move | (entry->annex << 16);
-			bound = entry->bounds >> 14;
+			assert(entry->key);
 
-			assert(entry->key != 0ULL);
-			assert(entry->depth <= lim::depth);
-			assert(bound != 0);
-			assert_exp(move == NO_MOVE || pos.pseudolegal(move));
-
-			if (entry->depth >= depth)
+			if (node.depth >= depth)
 			{
-				score = entry->score;
+				node.score = get::score(entry->data);
 
 				// adjusting mate scores
 
-				if (bound == EXACT)
+				if (node.bound == EXACT)
 				{
-					if (score >  MATE_SCORE) score -= curr_depth;
-					if (score < -MATE_SCORE) score += curr_depth;
+					if (node.score >  SCORE_LONGEST_MATE) node.score -= curr_depth;
+					if (node.score < -SCORE_LONGEST_MATE) node.score += curr_depth;
 				}
 
-				assert(score != NO_SCORE);
-				assert(score > MIN_SCORE && score < MAX_SCORE);
+				assert(-SCORE_MATE < node.score && node.score < SCORE_MATE);
 				return true;
 			}
 			return false;
@@ -240,15 +286,9 @@ bool trans::probe(const board &pos, uint32 &move, int &score, int &bound, int de
 
 int trans::hashfull()
 {
-	// exercising the occupation of the table
+	// determining the occupation of the table
 
-	if (size < 1000) return 0;
-	auto per_mill{ 0 };
-
-	for (auto i{ 0 }; i < 1000; ++i)
-	{
-		if (table[i].key != 0ULL)
-			per_mill += 1;
-	}
-	return per_mill;
+	assert(size >= (1ULL << 20) / sizeof(hash) / 2 && size >= 1000);
+	return static_cast<int>(std::count_if(table, table + 1000,
+		[&](hash &entry) { return entry.key != 0ULL; }));
 }

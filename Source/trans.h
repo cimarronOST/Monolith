@@ -1,5 +1,5 @@
 /*
-  Monolith 0.4  Copyright (C) 2017 Jonas Mayr
+  Monolith 1.0  Copyright (C) 2017-2018 Jonas Mayr
 
   This file is part of Monolith.
 
@@ -23,40 +23,32 @@
 #include "position.h"
 #include "main.h"
 
-// managing the main transposition table
+// managing the main transposition hash table
 
 class trans
 {
-public:
-
-	// a hash entry consists of 16 bytes
+private:
 
 	struct hash
 	{
 		uint64 key;
-		 int16 score;
-		uint16 bounds;
-		uint16 move;
-		uint8 annex;
-		uint8 depth;
+		uint64 data;
 	};
 
 	static_assert(sizeof(hash) == 16, "tt entry != 16 bytes");
 
-private:
-
-	// actual hash table
+	// actual hash table & table properties
 
 	static hash* table;
+
+	static constexpr int slots{ 4 };
+	static uint64 size;
+	static uint64 mask;
 
 	void erase();
 
 public:
 
-	// hash table properties
-
-	static uint64 size;
-	static uint64 mask;
 	static uint64 hash_hits;
 
 	trans(uint64 size)
@@ -67,7 +59,15 @@ public:
 
 	~trans() { erase(); }
 
-public:
+	// type to store probing results
+
+	struct entry
+	{
+		uint32 move;
+		int score;
+		int bound;
+		int depth;
+	};
 
 	// manipulating the table
 
@@ -76,8 +76,8 @@ public:
 
 	static uint64 to_key(const board &pos);
 
-	static void store(const board &pos, uint32  move, int  score, int  bound, int depth, int curr_depth);
-	static bool probe(const board &pos, uint32 &move, int &score, int &bound, int depth, int curr_depth);
+	static void store(uint64 &key, uint32 move, int score, int bound, int depth, int curr_depth);
+	static bool probe(uint64 &key, entry &node, int depth, int curr_depth);
 
 	static int hashfull();
 };

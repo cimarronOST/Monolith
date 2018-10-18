@@ -1,5 +1,5 @@
 /*
-  Monolith 0.4  Copyright (C) 2017 Jonas Mayr
+  Monolith 1.0  Copyright (C) 2017-2018 Jonas Mayr
 
   This file is part of Monolith.
 
@@ -24,7 +24,7 @@
 #include "position.h"
 #include "main.h"
 
-// sorting root node moves
+// handling the sorting of root node moves
 
 class sort_root
 {
@@ -33,73 +33,76 @@ private:
 	board pos;
 	gen &list;
 
+	void sort_moves();
+
 public:
+
+	sort_root(gen &movelist) : pos(movelist.pos), list(movelist) {}
+
+	// storing all relevant information of each move
 
 	struct root_node
 	{
 		uint32 move;
-		uint64 nodes;
-		uint64 weight;
+		int64 nodes;
+		int64 weight;
 		bool check;
 		bool skip;
-	};
+	} root[lim::moves]{};
 
-	sort_root(gen &movelist) : pos(movelist.pos), list(movelist){ }
-
-	root_node root[lim::moves]{ };
+	// weighting the moves
 
 	void statical();
+	void statical_tb();
 	void dynamical(uint32 pv_move);
-	void exclude_move(uint32 prev_move);
+
+	// handling multi-PV
+
+	void exclude_move(uint32 multipv_move);
+	void include_moves();
 };
 
-// assigning a weight to all moves in the alphabeta search movelist for sorting purpose
+// assigning a weight to all moves in the alpha-beta search movelist for sorting purpose
 
 class sort
 {
 public:
 
-	// history & killer heuristic types
-
-	struct hist_list{ uint64 list[2][6][64]; };
-	struct kill_list{ uint32 list[lim::depth][2]; };
-
 	// storing the assigned weights
 
-	uint64 score[lim::moves]{ };
+	int64 score[lim::moves]{};
 
-	// parameter only used in the main alphabeta move weighting
+	// parameter only used in the main alpha-beta move weighting
 
 	struct quiet_parameters
 	{
-		uint32 hash_move;
+		uint32 hash;
 		uint32 counter;
-		hist_list *history;
-		kill_list *killer;
-		int depth;
-	} quiets;
+		uint32 *killer;
+		int (*history)[6][64];
+	} quiets{};
+
+	static constexpr int64 history_max{ 1ULL << 62 };
 
 private:
 
 	gen &list;
-
-private:
 
 	// weighting captures & promotions
 
 	int mvv_lva(uint32 move) const;
 	int mvv_lva_promo(uint32 move) const;
 
-	bool is_loosing(board &pos, uint32 move) const;
-	bool is_double(uint32 move) const;
+	bool loosing(board &pos, uint32 move) const;
+	bool previous(uint32 move) const;
 
 public:
 
 	// main search
 
-	sort(gen &movelist, uint32 tt_move, uint32 counter, hist_list &history, kill_list &killer, int depth) : list(movelist)
+	sort(gen &movelist, uint32 tt_move, uint32 counter, uint32 killer[], int history[][6][64]) : list(movelist)
 	{
-		quiets = { tt_move, counter, &history, &killer, depth };
+		quiets = { tt_move, counter, killer, history };
 	}
 
 	void hash();
@@ -107,10 +110,11 @@ public:
 	void killer();
 	void quiet();
 	void loosing();
+	void deferred();
 
 	// quiescence search
 
-	sort(gen &movelist) : list(movelist) { }
+	sort(gen &movelist) : list(movelist) {}
 
 	void tactical();
 	void evasion();

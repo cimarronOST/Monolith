@@ -1,5 +1,5 @@
 /*
-  Monolith 0.4  Copyright (C) 2017 Jonas Mayr
+  Monolith 1.0  Copyright (C) 2017-2018 Jonas Mayr
 
   This file is part of Monolith.
 
@@ -20,25 +20,25 @@
 
 #pragma once
 
-#include "engine.h"
+#include "uci.h"
 #include "movesort.h"
 #include "movegen.h"
 #include "main.h"
 
 // orchestrating the generation and sorting of the root node movelist
 
-class movepick_root
+class rootpick
 {
 public:
 
 	gen list;
 	sort_root sort;
+	bool tb_pos{};
 
-	movepick_root(board &pos)
-		: list(pos, LEGAL), sort(list)
+	rootpick(board &pos) : list(pos, LEGAL), sort(list)
 	{
-		if (engine::limit.moves.size())
-			list.gen_searchmoves(engine::limit.moves);
+		if (uci::limit.moves.size())
+			list.gen_searchmoves(uci::limit.moves);
 		else
 			list.gen_all();
 
@@ -58,62 +58,66 @@ class movepick
 public:
 
 	gen list;
-	int attempts{ -1 };
-	int move_idx{ -1 };
+	int hits{};
 
 private:
 
 	sort weight;
-	gen_stage stage[5];
+	gen_stage stage[6]{};
+	uint32 *deferred_moves;
 
-	struct count
+	struct move_count
 	{
 		int cycles{ -1 };
-		int max_cycles{ };
+		int max_cycles{};
 
-		int attempts{ };
-		int moves{ };
-	} cnt;
-
-public:
-
-	// main search
-
-	movepick(board &pos, uint32 tt_move, uint32 counter, sort::hist_list &history, sort::kill_list &killer, int depth)
-		: list(pos, PSEUDO), weight(list, tt_move, counter, history, killer, depth)
-	{
-		cnt.max_cycles = 5;
-		stage[0] = HASH;
-		stage[1] = WINNING;
-		stage[2] = KILLER;
-		stage[3] = QUIET;
-		stage[4] = LOOSING;
-	}
-
-	// quiescence search
-
-	movepick(board &pos, bool in_check, int depth)
-		: list(pos, LEGAL), weight(list)
-	{
-		cnt.max_cycles = 1 + (depth == 0);
-		stage[0] = TACTICAL;
-		stage[1] = CHECK;
-
-		if (in_check)
-		{
-			cnt.max_cycles = 2;
-			stage[1] = EVASION;
-		}
-	}
-
+		int attempts{};
+		int moves{};
+	} count;
+	
 	// generating and weighting the moves
 
 	void gen_weight();
 
 public:
 
+	// alpha-beta search
+
+	movepick(board &pos, uint32 tt_move, uint32 counter, uint32 killer[], int history[][6][64], uint32 deferred[])
+		: list(pos, PSEUDO), weight(list, tt_move, counter, killer, history), deferred_moves(deferred)
+	{
+		count.max_cycles = 5 + (uci::thread_count > 1);
+		stage[0] = HASH;
+		stage[1] = WINNING;
+		stage[2] = KILLER;
+		stage[3] = QUIET;
+		stage[4] = LOOSING;
+		stage[5] = DEFERRED;
+	}
+
+	// quiescence search
+
+	movepick(board &pos, bool in_check, int depth)
+		: list(pos, LEGAL), weight(list), deferred_moves(nullptr)
+	{
+		count.max_cycles = 1 + (depth == 0);
+		stage[0] = TACTICAL;
+		stage[1] = CHECK;
+
+		if (in_check)
+		{
+			count.max_cycles = 2;
+			stage[1] = EVASION;
+		}
+	}
+
+public:
+
+	void revert(board &pos);
+	bool can_defer() const;
+
 	// picking the highest weighted move
-	// and if there are none left, initialising further generation and weighting
+	// and if there is none left, initializing further generation and weighting
 
 	uint32 next();
 };

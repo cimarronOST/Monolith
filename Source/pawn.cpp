@@ -1,5 +1,5 @@
 /*
-  Monolith 0.4  Copyright (C) 2017 Jonas Mayr
+  Monolith 1.0  Copyright (C) 2017-2018 Jonas Mayr
 
   This file is part of Monolith.
 
@@ -22,22 +22,12 @@
 #include "zobrist.h"
 #include "pawn.h"
 
-pawn::hash *pawn::table;
-
-const uint64 pawn::size{ 1ULL << 11 };
-const uint64 pawn::mask{ size - 1 };
-
-void pawn::hash::clear()
-{
-	*this = { 0ULL, {0ULL,0ULL}, {{0,0},{0,0}} };
-}
-
 void pawn::clear()
 {
 	// clearing the table
 
-	for (auto i{ 0U }; i < size; ++i)
-		table[i].clear();
+	for (uint32 i{}; i < size; ++i)
+		table[i] = hash{};
 }
 
 uint64 pawn::to_key(const board &pos)
@@ -45,17 +35,16 @@ uint64 pawn::to_key(const board &pos)
 	// converting the position into a pawn hash key
 	// the key considers only squares occupied by pawns
 
-	uint64 key{ 0ULL };
-
-	for (int col{ WHITE }; col <= BLACK; ++col)
+	uint64 key{};
+	for (int color{ WHITE }; color <= BLACK; ++color)
 	{
-		auto pawns{ pos.pieces[PAWNS] & pos.side[col] };
+		auto pawns{ pos.pieces[PAWNS] & pos.side[color] };
 		while (pawns)
 		{
 			auto sq{ bit::scan(pawns) };
-			assert(pos.piece_sq[sq] == PAWNS);
+			assert(pos.piece[sq] == PAWNS);
 
-			key ^= zobrist::rand_key[col * 64 + sq];
+			key ^= zobrist::rand_key[(PAWNS * 2 + color) * 64 + sq];
 			pawns &= pawns - 1;
 		}
 	}

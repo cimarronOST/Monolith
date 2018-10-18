@@ -1,5 +1,7 @@
 /*
-  Monolith 1.0  Copyright (C) 2017-2018 Jonas Mayr
+  Monolith 1.0
+  Copyright (C) 2011-2015 Ronald de Man
+  Copyright (C) 2017-2018 Jonas Mayr
 
   This file is part of Monolith.
 
@@ -20,26 +22,27 @@
 
 #pragma once
 
-#include "thread.h"
+#include "movepick.h"
 #include "position.h"
 #include "main.h"
 
-// analyzing the search & integrating a testing interface for debugging
+// probing syzygy endgame tablebases
+// all credits go to Ronald de Man for creating the awesome tablebases and providing the probing code:
+// https://github.com/syzygy1/tb
+// the probing code has been modified to conform with the engine
 
-namespace analysis
+namespace syzygy
 {
-	void reset();
-	void summary();
+	extern int max_pieces;
+	extern int tablebases;
 
-	// doing a performance- and correctness-test of the move-generator 
+	void init_tablebases(std::string &path);
 
-	void perft(board &pos, int depth, const gen_mode mode);
-}
+	// probing the tablebases
 
-// searching for the best move, this is the heart of the engine
+	int probe_wdl(board &pos, int &success);
+	int probe_dtz(board &pos, int &success);
 
-namespace search
-{
-	void reset();
-	void start(thread_pool &threads, int64 movetime);
+	bool probe_dtz_root(board &pos, rootpick &pick, uint64 repetition_hash[], int &tb_score);
+	bool probe_wdl_root(board &pos, rootpick &pick, int &tb_score);
 }

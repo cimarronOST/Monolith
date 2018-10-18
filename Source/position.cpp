@@ -1,5 +1,5 @@
 /*
-  Monolith 0.4  Copyright (C) 2017 Jonas Mayr
+  Monolith 1.0  Copyright (C) 2017-2018 Jonas Mayr
 
   This file is part of Monolith.
 
@@ -20,6 +20,7 @@
 
 #include <sstream>
 
+#include "utilities.h"
 #include "move.h"
 #include "pawn.h"
 #include "trans.h"
@@ -28,49 +29,28 @@
 #include "bit.h"
 #include "position.h"
 
-namespace
-{
-	// constants for fast indexing
-
-	const int push[]
-	{ 8, 56 };
-	const uint8 king_target[][2]
-	{ { G1, C1 }, { G8, C8 } };
-	const uint8 rook_target[][2]
-	{ { F1, D1 }, { F8, D8 } };
-}
-
-namespace square
-{
-	int index(std::string &sq)
-	{
-		assert(sq.size() == 2);
-		return 'h' - sq.front() + ((sq.back() - '1') << 3);
-	}
-}
-
 void board::new_move(uint32 move)
 {
 	// updating the board with a new move
 
-	move_cnt += 1;
-	half_move_cnt += 1;
+	move_count += 1;
+	half_count += 1;
 	capture = 0;
 	move::elements el{ move::decode(move) };
 
-	auto sq1_64{ 1ULL << el.sq1 };
-	auto sq2_64{ 1ULL << el.sq2 };
+	auto sq1_bit{ 1ULL << el.sq1 };
+	auto sq2_bit{ 1ULL << el.sq2 };
 
 	assert(el.sq1 >= H1 && el.sq1 <= A8);
 	assert(el.sq2 >= H1 && el.sq2 <= A8);
 	assert(el.piece != NONE);
-	assert(el.piece == piece_sq[el.sq1]);
+	assert(el.piece == piece[el.sq1]);
 	assert(el.victim != KINGS);
 
 	// checking if castling rights have to be adjusted when the rook is engaged
 
-	uint8 old_castling_right[4];
-	for (auto i{ 0 }; i < 4; ++i)
+	uint8 old_castling_right[4]{};
+	for (int i{}; i < 4; ++i)
 		old_castling_right[i] = castling_right[i];
 
 	rook_is_engaged(el.sq1, el.piece);
@@ -80,24 +60,24 @@ void board::new_move(uint32 move)
 
 	if (el.victim != NONE)
 	{
-		// capturing enpassant
+		// capturing en-passant
 
 		if (el.flag == ENPASSANT)
 		{
-			assert(ep_sq != 0ULL);
+			assert(ep_rear != 0ULL);
 
-			auto victim{ bit::shift(ep_sq, push[xturn]) };
+			auto victim{ bit::shift(ep_rear, shift::push[xturn]) };
 			assert(victim & pieces[PAWNS] & side[xturn]);
 
 			pieces[PAWNS] &= ~victim;
-			side[xturn] &= ~victim;
+			side[xturn]   &= ~victim;
 
 			auto sq{ bit::scan(victim) };
-			assert(piece_sq[sq] == PAWNS);
-			piece_sq[sq] = NONE;
+			assert(piece[sq] == PAWNS);
+			piece[sq] = NONE;
 
-			auto rand_key{ zobrist::rand_key[xturn * 64 + sq] };
-			key ^= rand_key;
+			auto rand_key{ zobrist::rand_key[(PAWNS * 2 + xturn) * 64 + sq] };
+			key      ^= rand_key;
 			pawn_key ^= rand_key;
 		}
 
@@ -105,16 +85,16 @@ void board::new_move(uint32 move)
 		
 		else
 		{
-			assert(sq2_64 & side[xturn]);
-			side[xturn] &= ~sq2_64;
-			pieces[el.victim] &= ~sq2_64;
+			assert(sq2_bit & side[xturn]);
+			side[xturn]       &= ~sq2_bit;
+			pieces[el.victim] &= ~sq2_bit;
 			key ^= zobrist::rand_key[(el.victim * 2 + xturn) * 64 + el.sq2];
 
 			if (el.victim == PAWNS)
 				pawn_key ^= zobrist::rand_key[xturn * 64 + el.sq2];
 		}
 
-		half_move_cnt = 0;
+		half_count = 0;
 		capture = el.sq2;
 	}
 
@@ -122,80 +102,79 @@ void board::new_move(uint32 move)
 
 	if (el.piece == PAWNS)
 	{
-		half_move_cnt = 0;
+		half_count = 0;
 		pawn_key ^= zobrist::rand_key[turn * 64 + el.sq1];
 		pawn_key ^= zobrist::rand_key[turn * 64 + el.sq2];
 	}
 
-	// checking the validity of the enpassant square
+	// checking the validity of the en-passant square
 
-	if (ep_sq)
+	if (ep_rear)
 	{
-		auto ep_idx{ bit::scan(ep_sq) };
-		if (pieces[PAWNS] & side[turn] & attack::king_map[ep_idx] & (bit::rank[R4] | bit::rank[R5]))
-			key ^= zobrist::rand_key[zobrist::off.ep + square::file(ep_idx)];
-		ep_sq = 0ULL;
+		auto ep_index{ bit::scan(ep_rear) };
+		if (pieces[PAWNS] & side[turn] & attack::king_map[ep_index] & (bit::rank[R4] | bit::rank[R5]))
+			key ^= zobrist::rand_key[zobrist::off.ep + index::file(ep_index)];
+		ep_rear = 0ULL;
 	}
 
-	// doublepushing pawn
+	// double-pushing pawn
 
 	if (el.flag == DOUBLEPUSH)
 	{
 		assert(el.piece == PAWNS && el.victim == NONE);
-		auto ep_idx{ (el.sq1 + el.sq2) / 2 };
-		ep_sq = 1ULL << ep_idx;
+		auto ep_index{ (el.sq1 + el.sq2) / 2 };
+		ep_rear = 1ULL << ep_index;
 
-		if (pieces[PAWNS] & side[xturn] & attack::king_map[ep_idx] & (bit::rank[R4] | bit::rank[R5]))
-			key ^= zobrist::rand_key[zobrist::off.ep + square::file(ep_idx)];
+		if (pieces[PAWNS] & side[xturn] & attack::king_map[ep_index] & (bit::rank[R4] | bit::rank[R5]))
+			key ^= zobrist::rand_key[zobrist::off.ep + index::file(ep_index)];
 	}
 
 	// decoding castling
 
-	if (move::is_castling(el.flag))
+	if (move::castling(el.flag))
 	{
-		el.sq2 = king_target[turn][el.flag - SHORT];
-		sq2_64 = 1ULL << el.sq2;
+		el.sq2 = square::king_target[turn][move::castle_side(el.flag)];
+		sq2_bit = 1ULL << el.sq2;
 	}
 
 	// rearranging the pieces
 
-	pieces[el.piece] ^= sq1_64;
-	pieces[el.piece] |= sq2_64;
+	pieces[el.piece] ^= sq1_bit;
+	pieces[el.piece] |= sq2_bit;
 
-	side[turn] ^= sq1_64;
-	side[turn] |= sq2_64;
+	side[turn] ^= sq1_bit;
+	side[turn] |= sq2_bit;
 
-	piece_sq[el.sq1] = NONE;
-	piece_sq[el.sq2] = el.piece;
+	piece[el.sq1] = NONE;
+	piece[el.sq2] = el.piece;
 
-	auto idx{ (el.piece * 2 + turn) * 64 };
-	key ^= zobrist::rand_key[idx + el.sq1];
-	key ^= zobrist::rand_key[idx + el.sq2];
+	auto offset{ (el.piece * 2 + turn) * 64 };
+	key ^= zobrist::rand_key[offset + el.sq1];
+	key ^= zobrist::rand_key[offset + el.sq2];
 
 	if (el.flag >= 10)
 	{
 		// including the rook move when castling
 
-		if (el.flag == castling::SHORT)
-			rook_castling(castling_right[turn], rook_target[turn][0]);
-		else if (el.flag == castling::LONG)
-			rook_castling(castling_right[turn + 2], rook_target[turn][1]);
+		if (el.flag == CASTLE_SHORT)
+			rook_castling(castling_right[turn],     square::rook_target[turn][move::castle_side(CASTLE_SHORT)]);
+		else if (el.flag == CASTLE_LONG)
+			rook_castling(castling_right[turn + 2], square::rook_target[turn][move::castle_side(CASTLE_LONG)]);
 
 		// promoting pawns
 
 		else
 		{
-			auto promo_piece{ el.flag - 11 };
+			auto promo_piece{ move::promo_piece(el.flag) };
 
-			assert(el.flag >= 12 && el.flag <= 15);
-			assert(pieces[PAWNS] & sq2_64);
-			assert(piece_sq[el.sq2] == PAWNS);
+			assert(pieces[PAWNS] & sq2_bit);
+			assert(piece[el.sq2] == PAWNS);
 
-			pieces[PAWNS] ^= sq2_64;
-			pieces[promo_piece] |= sq2_64;
-			piece_sq[el.sq2] = promo_piece;
+			pieces[PAWNS]       ^= sq2_bit;
+			pieces[promo_piece] |= sq2_bit;
+			piece[el.sq2] = promo_piece;
 
-			key ^= zobrist::rand_key[turn * 64 + el.sq2];
+			key ^= zobrist::rand_key[(PAWNS       * 2 + turn) * 64 + el.sq2];
 			key ^= zobrist::rand_key[(promo_piece * 2 + turn) * 64 + el.sq2];
 			pawn_key ^= zobrist::rand_key[turn * 64 + el.sq2];
 		}
@@ -203,17 +182,17 @@ void board::new_move(uint32 move)
 
 	// adjusting the castling rights when the king moves
 
-	if (sq2_64 & pieces[KINGS])
+	if (sq2_bit & pieces[KINGS])
 	{
-		castling_right[turn] = PROHIBITED;
+		castling_right[turn]     = PROHIBITED;
 		castling_right[turn + 2] = PROHIBITED;
 
-		king_sq[turn] = el.sq2;
+		sq_king[turn] = el.sq2;
 	}
 
 	// updating the hash key when castling rights change
 
-	for (auto i{ 0 }; i < 4; ++i)
+	for (int i{}; i < 4; ++i)
 	{
 		if (old_castling_right[i] != castling_right[i])
 		{
@@ -226,17 +205,19 @@ void board::new_move(uint32 move)
 
 	xturn ^= 1;
 	turn  ^= 1;
-	key ^= zobrist::rand_key[zobrist::off.turn];
+	key   ^= zobrist::rand_key[zobrist::off.turn];
 	side[BOTH] = side[WHITE] | side[BLACK];
 
 	assert(turn == (xturn ^ 1));
 	assert(side[BOTH] == (side[WHITE] ^ side[BLACK]));
 	assert_exp(trans::to_key(*this) == key);
-	assert_exp(pawn::to_key(*this)  == pawn_key);
+	assert_exp( pawn::to_key(*this) == pawn_key);
 }
 
 void board::revert(board &prev_pos)
 {
+	// reverting the position to <prev_pos>
+
 	*this = prev_pos;
 }
 
@@ -257,46 +238,47 @@ void board::rook_is_engaged(int sq, int piece)
 
 void board::rook_castling(int sq1, int sq2)
 {
-	// moving the rook to castle
+	// moving the rook to its position when castling
 
 	assert(sq1 <= A8 && sq1 >= H1);
 
 	pieces[ROOKS] ^= (1ULL << sq1);
 	pieces[ROOKS] |= (1ULL << sq2);
 	
-	if (piece_sq[sq1] == ROOKS)
+	if (piece[sq1] == ROOKS)
 	{
-		piece_sq[sq1] = NONE;
+		piece[sq1]  = NONE;
 		side[turn] ^= (1ULL << sq1);
 	}
 	else
-		assert(piece_sq[sq1] == KINGS);
+		assert(piece[sq1] == KINGS);
 
 	side[turn] |= (1ULL << sq2);
-	piece_sq[sq2] = ROOKS;
+	piece[sq2]  = ROOKS;
 
-	key ^= zobrist::rand_key[(6 + turn) * 64 + sq1];
-	key ^= zobrist::rand_key[(6 + turn) * 64 + sq2];
+	key ^= zobrist::rand_key[(ROOKS * 2 + turn) * 64 + sq1];
+	key ^= zobrist::rand_key[(ROOKS * 2 + turn) * 64 + sq2];
 }
 
 void board::null_move(uint64 &ep_copy, uint16 &capture_copy)
 {
-	// doing a "null move" i.e. not moving, used for null move pruning
+	// doing a "null move" by not moving but pretending to have moved, used for null move pruning
+	// special care for en-passant has to be taken
 
 	key ^= zobrist::rand_key[zobrist::off.turn];
 	capture_copy = capture;
 
-	if (ep_sq)
+	if (ep_rear)
 	{
-		auto ep_idx{ bit::scan(ep_sq) };
-		if (pieces[PAWNS] & side[turn] & attack::king_map[ep_idx] & (bit::rank[R4] | bit::rank[R5]))
-			key ^= zobrist::rand_key[zobrist::off.ep + square::file(ep_idx)];
-		ep_copy = ep_sq;
-		ep_sq = 0;
+		auto ep_index{ bit::scan(ep_rear) };
+		if (pieces[PAWNS] & side[turn] & attack::king_map[ep_index] & (bit::rank[R4] | bit::rank[R5]))
+			key ^= zobrist::rand_key[zobrist::off.ep + index::file(ep_index)];
+		ep_copy = ep_rear;
+		ep_rear = 0;
 	}
 
-	half_move_cnt += 1;
-	move_cnt += 1;
+	half_count += 1;
+	move_count += 1;
 	turn  ^= 1;
 	xturn ^= 1;
 
@@ -312,14 +294,14 @@ void board::revert_null_move(uint64 &ep_copy, uint16 &capture_copy)
 
 	if (ep_copy)
 	{
-		auto ep_idx{ bit::scan(ep_copy) };
-		if (pieces[PAWNS] & side[xturn] & attack::king_map[ep_idx] & (bit::rank[R4] | bit::rank[R5]))
-			key ^= zobrist::rand_key[zobrist::off.ep + square::file(ep_idx)];
-		ep_sq = ep_copy;
+		auto ep_index{ bit::scan(ep_copy) };
+		if (pieces[PAWNS] & side[xturn] & attack::king_map[ep_index] & (bit::rank[R4] | bit::rank[R5]))
+			key ^= zobrist::rand_key[zobrist::off.ep + index::file(ep_index)];
+		ep_rear = ep_copy;
 	}
 
-	half_move_cnt -= 1;
-	move_cnt -= 1;
+	half_count -= 1;
+	move_count -= 1;
 	turn  ^= 1;
 	xturn ^= 1;
 
@@ -330,25 +312,25 @@ void board::clear()
 {
 	// resetting the board to blankness
 
-	std::fill(pieces, pieces + 6, 0ULL);
-	std::fill(side, side + 3, 0ULL);
-	std::fill(piece_sq, piece_sq + 64, NONE);
+	std::fill(pieces, pieces +  6, 0ULL);
+	std::fill(side,   side   +  3, 0ULL);
+	std::fill(piece,  piece  + 64, NONE);
 	std::fill(castling_right, castling_right + 4, PROHIBITED);
 
-	move_cnt = 0;
-	half_move_cnt = 0;
+	move_count = 0;
+	half_count = 0;
 	capture = 0;
-	ep_sq = 0ULL;
+	ep_rear = 0ULL;
 	turn  = WHITE;
 	xturn = BLACK;
 }
 
-uint8 board::get_rook_sq(int col, int dir) const
+uint8 board::sq_rook(int col, int dir) const
 {
 	// getting the position of the rook if castling is allowed (used for Chess960)
 
-	auto sq{ king_sq[col] };
-	for (; piece_sq[sq] != ROOKS; sq += dir);
+	auto sq{ sq_king[col] };
+	for ( ; piece[sq] != ROOKS; sq += dir);
 	return sq;
 }
 
@@ -358,14 +340,13 @@ void board::parse_fen(std::string fen)
 
 	int sq{ H1 };
 	std::istringstream stream(fen);
-	std::string token{ };
+	std::string token{};
 
 	clear();
-	stream >> token;
 
 	// getting all pieces in place
 
-	for (; token.size() != 0; token.pop_back())
+	for (stream >> token; !token.empty(); token.pop_back())
 	{
 		assert(sq >= H1 && sq <= A8);
 
@@ -380,7 +361,7 @@ void board::parse_fen(std::string fen)
 			sq += focus - '0';
 		else
 		{
-			int col{ islower(focus) ? BLACK : WHITE };
+			int color{ islower(focus) ? BLACK : WHITE };
 			auto letter{ static_cast<char>(toupper(focus)) };
 
 			for (int p{ PAWNS }; p <= KINGS; ++p)
@@ -388,9 +369,9 @@ void board::parse_fen(std::string fen)
 				if (letter != "PNBRQK"[p])
 					continue;
 
-				pieces[p] |= 1ULL << sq;
-				side[col] |= 1ULL << sq;
-				piece_sq[sq] = p;
+				pieces[p]   |= 1ULL << sq;
+				side[color] |= 1ULL << sq;
+				piece[sq] = p;
 				break;
 			}
 			sq += 1;
@@ -402,64 +383,63 @@ void board::parse_fen(std::string fen)
 
 	// finding the king squares
 
-	king_sq[WHITE] = static_cast<uint8>(bit::scan(pieces[KINGS] & side[WHITE]));
-	king_sq[BLACK] = static_cast<uint8>(bit::scan(pieces[KINGS] & side[BLACK]));
+	sq_king[WHITE] = static_cast<uint8>(bit::scan(pieces[KINGS] & side[WHITE]));
+	sq_king[BLACK] = static_cast<uint8>(bit::scan(pieces[KINGS] & side[BLACK]));
 
 	// setting the side to move
 
 	stream >> token;
 	assert(token == "w" || token == "b");
 
-	turn = { token == "w" ? WHITE : BLACK };
+	turn  = { token == "w" ? WHITE : BLACK };
 	xturn = turn ^ 1;
 
 	// setting castling rights
 
 	stream >> token;
-
 	if (token != "-")
 	{
-		for (; token.size() != 0; token.pop_back())
+		for ( ; !token.empty(); token.pop_back())
 		{
-			int col{ islower(token.back()) ? BLACK : WHITE };
+			int color{ islower(token.back()) ? BLACK : WHITE };
 			auto letter{ toupper(token.back()) };
 
 			if (letter == 'K')
 			{
-				castling_right[col] = get_rook_sq(col, -1);
+				castling_right[color] = sq_rook(color, -1);
 			}
 			else if (letter == 'Q')
 			{
-				castling_right[col + 2] = get_rook_sq(col, 1);
+				castling_right[color + 2] = sq_rook(color, 1);
 			}
 			else if (letter >= 'A' && letter <= 'H')
 			{
 				auto file_rook{ 'H' - letter };
-				auto idx{ file_rook > square::file(king_sq[col]) ? col + 2 : col };
+				auto index{ file_rook > index::file(sq_king[color]) ? color + 2 : color };
 
-				castling_right[idx] = file_rook + col * 56;
+				castling_right[index] = file_rook + color * H8;
 			}
 		}
 	}
 
-	// setting possible enpassant square
+	// setting possible en-passant square
 
 	stream >> token;
 	if (token != "-")
-		ep_sq = 1ULL << square::index(token);
+		ep_rear = 1ULL << square::index(token);
 
 	// creating hash keys & checking if the fen is complete
 
-	key = trans::to_key(*this);
-	pawn_key = pawn::to_key(*this);
+	key      = trans::to_key(*this);
+	pawn_key =  pawn::to_key(*this);
 	if (!(stream >> token))
 		return;
 
-	// setting half-move & move count
+	// setting half-move- & move-count
 
-	half_move_cnt = stoi(token);
-	stream >> move_cnt;
-	move_cnt = move_cnt * 2 - 1 - turn;
+	half_count = stoi(token);
+	stream >> move_count;
+	move_count = move_count * 2 - 1 - turn;
 }
 
 bool board::check() const
@@ -467,6 +447,61 @@ bool board::check() const
 	// returning true if the moving side is in check
 
 	return !attack::check(*this, turn, pieces[KINGS] & side[turn]);
+}
+
+bool board::gives_check(uint32 move)
+{
+	// determining if <move> gives check (assuming it is a legal move)
+
+	assert(move != MOVE_NONE);
+	assert(move::turn(move) == turn);
+	assert(piece[move::sq1(move)] != NONE);
+
+	auto sq1 { move::sq1(move) };
+	auto sq2 { move::sq2(move) };
+	auto flag{ move::flag(move) };
+	auto occ{ side[BOTH] };
+
+	if (move::castling(move))
+	{
+		// considering only the rook
+
+		occ ^= 1ULL << sq1;
+		sq1  = sq2;
+		sq2  = square::rook_target[turn][move::castle_side(flag)];
+	}
+
+	auto p{ piece[sq1] };
+	auto sq1_bit{ 1ULL << sq1 };
+	auto sq2_bit{ 1ULL << sq2 };
+	
+	occ ^= sq1_bit;
+	occ |= sq2_bit;
+
+	// direct check
+
+	if (move::promo(move))
+		p = move::promo_piece(flag);
+
+	if (attack::by_piece(p, sq2, turn, occ) & pieces[KINGS] & side[xturn])
+		return true;
+
+	// discovered check
+
+	bool check{};
+	if (flag == ENPASSANT)
+	{
+		sq1_bit |= bit::shift(ep_rear, shift::push[xturn]);
+		occ    &= ~sq1_bit;
+	}
+
+	if (attack::slide_map[ROOK][sq_king[xturn]] & sq1_bit)
+		check = attack::by_slider<ROOK>(sq_king[xturn], occ) & (pieces[ROOKS] | pieces[QUEENS]) & occ & side[turn];
+
+	if (attack::slide_map[BISHOP][sq_king[xturn]] & sq1_bit)
+		check = check || (attack::by_slider<BISHOP>(sq_king[xturn], occ) & (pieces[BISHOPS] | pieces[QUEENS]) & occ & side[turn]);
+
+	return check;
 }
 
 bool board::lone_king() const
@@ -483,16 +518,41 @@ bool board::recapture(uint32 move) const
 	return move::sq2(move) == capture;
 }
 
+bool board::repetition(uint64 hash[], int offset) const
+{
+	// marking every one-fold-repetition as a draw
+	// hash[] has a big safety margin for GUIs like Arena that don't always recognize a 50-move-draw immediately
+
+	assert(offset <= lim::depth + 256);
+	assert(hash[offset] == key);
+
+	for (int i{ 4 }; i <= half_count && i <= offset; i += 2)
+	{
+		if (hash[offset - i] == hash[offset])
+			return true;
+	}
+	return false;
+}
+
+bool board::draw(uint64 hash[], int offset) const
+{
+	// detecting draw-by-50-move-rule & draw-by-repetition
+	// draw-by-insufficient-mating-material is handled by the static evaluation
+
+	return repetition(hash, offset) || half_count >= 100;
+}
+
 bool board::pseudolegal(uint32 move) const
 {
-	// asserting the correct match between the board and <move>
+	// asserting the correct match between the board and a move
+	// a correct move-format is assumed
 
-	if (move == NO_MOVE)
+	if (move == MOVE_NONE)
 		return false;
 
 	move::elements el{ move::decode(move) };
-	auto sq1_64{ 1ULL << el.sq1 };
-	auto sq2_64{ 1ULL << el.sq2 };
+	auto sq1_bit{ 1ULL << el.sq1 };
+	auto sq2_bit{ 1ULL << el.sq2 };
 
 	// assessing the side to move
 
@@ -501,37 +561,37 @@ bool board::pseudolegal(uint32 move) const
 
 	// assessing start square sq1
 
-	if (!(sq1_64 & (pieces[el.piece] & side[el.turn])))
+	if (!(sq1_bit & (pieces[el.piece] & side[el.turn])))
 		return false;
 
 	// assessing end square sq2
 
-	if (move::is_castling(el.flag))
+	if (move::castling(el.flag))
 	{
-		if (!(sq2_64 & (pieces[ROOKS] & side[el.turn])))
+		if (!(sq2_bit & (pieces[ROOKS] & side[el.turn])))
 			return false;
 	}
 	else if (el.victim == NONE || el.flag == ENPASSANT)
 	{
-		if (piece_sq[el.sq2] != NONE)
+		if (piece[el.sq2] != NONE)
 			return false;
 	}
 	else
 	{
 		assert(el.victim != NONE);
-		if (!(sq2_64 & (pieces[el.victim] & side[el.turn ^ 1])))
+		if (!(sq2_bit & (pieces[el.victim] & side[el.turn ^ 1])))
 			return false;
 	}
 
-	// assessing the path between sq1 & sq2
+	// checking whether the path between sq1 & sq2 is free
 
 	switch (el.piece)
 	{
 	case PAWNS:
 		if (el.flag == DOUBLEPUSH)
-			return piece_sq[(el.sq1 + el.sq2) / 2] == NONE;
+			return piece[(el.sq1 + el.sq2) / 2] == NONE;
 		else if (el.flag == ENPASSANT)
-			return ep_sq == sq2_64;
+			return ep_rear == sq2_bit;
 		else
 			return true;
 
@@ -539,13 +599,13 @@ bool board::pseudolegal(uint32 move) const
 		return true;
 
 	case BISHOPS:
-		return sq2_64 & attack::by_slider<BISHOP>(el.sq1, side[BOTH]);
+		return sq2_bit & attack::by_slider<BISHOP>(el.sq1, side[BOTH]);
 
 	case ROOKS:
-		return sq2_64 & attack::by_slider<ROOK>(el.sq1, side[BOTH]);
+		return sq2_bit & attack::by_slider<ROOK>(el.sq1, side[BOTH]);
 
 	case QUEENS:
-		return sq2_64 & attack::by_slider<QUEEN>(el.sq1, side[BOTH]);
+		return sq2_bit & attack::by_slider<QUEEN>(el.sq1, side[BOTH]);
 
 	case KINGS:
 		if (el.flag == NONE)
@@ -556,48 +616,50 @@ bool board::pseudolegal(uint32 move) const
 		{
 			// assessing the messy right to castle
 
-			assert(move::is_castling(el.flag));
+			assert(move::castling(el.flag));
 
-			if (castling_right[turn + 2 * (el.flag - SHORT)] == PROHIBITED)
+			if (castling_right[turn + 2 * move::castle_side(el.flag)] == PROHIBITED)
 				return false;
 
 			switch (el.flag)
 			{
-			case castling::SHORT:
+			case CASTLE_SHORT:
 			{
-				auto king_target_64{ 1ULL << king_target[turn][0] };
-				auto rook_64{ 1ULL << castling_right[turn] };
+				auto king_target_bit{ 1ULL << square::king_target[turn][0] };
+				auto rook_bit{ 1ULL << castling_right[turn] };
 
-				auto bound_max{ 1ULL << std::max(static_cast<uint8>(rook_target[turn][0] + 1), king_sq[turn]) };
-				auto bound_min{ std::min(king_target_64, rook_64) };
-				auto occupancy{ side[BOTH] ^ (1ULL << king_sq[turn] | rook_64) };
+				auto bound_max{ 1ULL
+					<< std::max(static_cast<uint8>(square::rook_target[turn][move::castle_side(CASTLE_SHORT)] + 1), sq_king[turn]) };
+				auto bound_min{ std::min(king_target_bit, rook_bit) };
+				auto occupancy{ side[BOTH] ^ (1ULL << sq_king[turn] | rook_bit) };
 
 				if (((bound_max - 1) & ~(bound_min - 1)) & occupancy)
 					return false;
 
-				auto no_check_zone{ ((1ULL << (king_sq[turn] + 1)) - 1) & ~(king_target_64 - 1) };
+				auto no_check_zone{ ((1ULL << (sq_king[turn] + 1)) - 1) & ~(king_target_bit - 1) };
 				board pos_copy{ *this };
-				pos_copy.side[BOTH] ^= rook_64;
+				pos_copy.side[BOTH] ^= rook_bit;
 
 				if (attack::check(pos_copy, turn, no_check_zone) != no_check_zone)
 					return false;
 
 				return true;
 			}
-			case castling::LONG:
+			case CASTLE_LONG:
 			{
-				auto rook_64{ 1ULL << castling_right[turn + 2] };
+				auto rook_bit{ 1ULL << castling_right[turn + 2] };
 
-				auto bound_max{ 1ULL << std::max(static_cast<uint8>(king_target[turn][1] + 1), castling_right[turn + 2]) };
-				auto bound_min{ 1ULL << std::min(rook_target[turn][1], king_sq[turn]) };
-				auto occupancy{ side[BOTH] & ~((1ULL << king_sq[turn]) | rook_64) };
+				auto bound_max{ 1ULL << std::max(static_cast<uint8>(square::king_target[turn][1] + 1), castling_right[turn + 2]) };
+				auto bound_min{ 1ULL << std::min(square::rook_target[turn][move::castle_side(CASTLE_LONG)], sq_king[turn]) };
+				auto occupancy{ side[BOTH] & ~((1ULL << sq_king[turn]) | rook_bit) };
 
 				if (((bound_max - 1) ^ (bound_min - 1)) & occupancy)
 					return false;
 
-				auto no_check_zone{ (1ULL << king_sq[turn]) | (1ULL << king_target[turn][1]) | (((1ULL << king_target[turn][1]) - 1) & ~((1ULL << king_sq[turn]) - 1)) };
+				auto no_check_zone{ (1ULL << sq_king[turn]) | (1ULL << square::king_target[turn][1])
+					| (((1ULL << square::king_target[turn][1]) - 1) & ~((1ULL << sq_king[turn]) - 1)) };
 				board pos_copy{ *this };
-				pos_copy.side[BOTH] ^= rook_64;
+				pos_copy.side[BOTH] ^= rook_bit;
 
 				if (attack::check(pos_copy, turn, no_check_zone) != no_check_zone)
 					return false;
@@ -614,4 +676,12 @@ bool board::pseudolegal(uint32 move) const
 		assert(false);
 		return false;
 	}
+}
+
+bool board::legal() const
+{
+	// checking if the position is legal
+	// can be used to check if a move is legal by calling legal() after the move was made
+
+	return attack::check(*this, xturn, pieces[KINGS] & side[xturn]);
 }

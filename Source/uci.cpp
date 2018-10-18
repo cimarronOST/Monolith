@@ -1,5 +1,5 @@
 /*
-  Monolith 0.4  Copyright (C) 2017 Jonas Mayr
+  Monolith 1.0  Copyright (C) 2017-2018 Jonas Mayr
 
   This file is part of Monolith.
 
@@ -18,59 +18,81 @@
 */
 
 
+#include "utilities.h"
+#include "thread.h"
+#include "texel.h"
+#include "eval.h"
+#include "search.h"
+#include "polyglot.h"
+#include "trans.h"
 #include "chronos.h"
-#include "notation.h"
+#include "move.h"
 #include "movegen.h"
 #include "bench.h"
 #include "stream.h"
-#include "engine.h"
+#include "syzygy.h"
 #include "uci.h"
 
-namespace thread
-{
-	void stop_if(std::thread &searching)
-	{
-		if (searching.joinable())
-		{
-			engine::stop = true;
-			searching.join();
-		}
-	}
+// values depending on the 'setoption' command
 
-	bool ignore(std::thread &searching)
-	{
-		if (engine::stop)
-		{
-			if (searching.joinable())
-				searching.join();
-			return false;
-		}
-		else
-			return true;
-	}
+int uci::hash_size{ 128 };
+int uci::thread_count{ 1 };
+int uci::multipv{ 1 };
+int uci::overhead{};
+int uci::contempt[]{ SCORE_DRAW, SCORE_DRAW };
+
+struct uci::syzygy_settings uci::syzygy{ "<empty>", 1, lim::syzygy_pieces, true };
+
+bool uci::ponder  { false };
+bool uci::chess960{ false };
+bool uci::use_book{ true };
+
+// values depending on the 'go' command
+
+bool uci::infinite{ false };
+struct uci::search_limit uci::limit{};
+
+// values depending on various other things
+
+int uci::move_count{};
+int uci::move_offset{};
+
+uint64 uci::quiet_hash[256]{};
+
+bool uci::stop{ true };
+bool uci::bookmove{ true };
+
+namespace hash
+{
+	// main transposition hash-table
+
+	trans table(uci::hash_size);
 }
 
 namespace limits
 {
 	void infinite()
 	{
-		engine::limit.moves.clear();
-		engine::limit.nodes = lim::nodes;
-		engine::limit.depth = lim::depth;
-		engine::limit.mate = 0;
+		// resetting all search limits to their limit at every 'go' command
+
+		uci::limit.moves.clear();
+		uci::limit.nodes = lim::nodes;
+		uci::limit.depth = lim::depth;
+		uci::limit.mate  = 0;
 	}
 }
 
 namespace value
 {
-	bool boolean(std::string value)
+	bool boolean(std::string &value)
 	{
-		return value == "true" ? true : false;
+		assert(value == "true" || value == "false");
+		return value == "true";
 	}
 
 	std::string boolean(bool value)
 	{
-		return value == true ? "true" : "false";
+		return value ? "true" : "false";
 	}
 }
 
@@ -78,17 +100,28 @@ namespace move
 {
 	uint32 encode(board &pos, std::string input)
 	{
-		// encoding the coordinate movestring
+		// encoding the coordinate move-string into the internal move-representation
 
 		gen list(pos, LEGAL);
 		list.gen_all();
 
-		for (auto i{ 0 }; i < list.cnt.moves; ++i)
+		for (int i{}; i < list.moves; ++i)
 		{
-			if (input == notation::algebraic(list.move[i]))
+			if (input == move::algebraic(list.move[i]))
 				return list.move[i];
 		}
-		return NO_MOVE;
+		return MOVE_NONE;
+	}
+
+	void save(const board &pos)
+	{
+		// keeping track of the half move count & transpositions to detect repetitions
+
+		uci::move_offset = { pos.half_count ? uci::move_offset + 1 : 0 };
+		uci::move_count += 1;
+		assert(uci::move_offset <= pos.half_count);
+
+		uci::quiet_hash[uci::move_offset] = pos.key;
 	}
 }
 
@@ -96,11 +129,13 @@ namespace display
 {
 	void position(board &pos)
 	{
-		const std::string row{ "+---+---+---+---+---+---+---+---+" };
+		// displaying the piece placement of the position
+
+		std::string row{ "+---+---+---+---+---+---+---+---+" };
 		sync::cout << row << "\n";
 		for (int sq{ A8 }; sq >= H1; --sq)
 		{
-			auto piece{ "PNBRQK  "[pos.piece_sq[sq]] };
+			auto piece{ "PNBRQK  "[pos.piece[sq]] };
 			sync::cout << "| " << ((1ULL << sq) & pos.side[BLACK] ? static_cast<char>(tolower(piece)) : piece) << " ";
 			if (sq % 8 == 0)
 				sync::cout << "|\n" << row << std::endl;
@@ -108,241 +143,318 @@ namespace display
 	}
 }
 
-void uci::search(board *pos, uint64 time)
+namespace game
 {
-	// retrieveing a book move, or (if there is none) starting the search
-
-	engine::stop = false;
-	uint32 ponder{ };
-	uint32 best_move{ engine::book_move ? engine::get_book_move(*pos) : NO_MOVE };
-
-	best_move = { best_move ? best_move : engine::start_searching(*pos, time, ponder) };
-	assert(best_move != NO_MOVE);
-	engine::stop = true;
-
-	sync::cout << "bestmove " << notation::algebraic(best_move)
-		<< (ponder ? " ponder " + notation::algebraic(ponder) : "")
-		<< std::endl;
-}
-
-void uci::searchmoves(std::istringstream &stream, board &pos)
-{
-	// parsing the 'go searchmoves' command
-
-	std::string token;
-	while (stream >> token)
+	void new_move(board &pos, uint32 move)
 	{
-		auto move{ move::encode(pos, token) };
-		if (move == NO_MOVE)
-		{
-			std::string remains{ token };
-			while (stream >> token)
-				remains += " " + token;
+		// doing & saving a new move
 
-			stream.str(remains);
-			stream.clear();
-			break;
-		}
-		engine::limit.moves.push_back(move);
+		pos.new_move(move);
+		move::save(pos);
+	}
+
+	void reset()
+	{
+		// resetting all game-specific parameters used detect repetitions
+
+		uci::move_count  = 0;
+		uci::move_offset = 0;
+		for (auto &hash : uci::quiet_hash) hash = 0ULL;
 	}
 }
 
-void uci::go(std::istringstream &stream, std::thread &searching, board &pos)
+namespace uci
 {
-	// applying specifications before starting the search after the 'go' command
-
-	std::string token;
-	chronomanager chrono;
-	limits::infinite();
-
-	while (stream >> token)
+	void search(thread_pool &threads, board &pos, int64 movetime)
 	{
-		if (token == "movestogo")
+		// retrieving a book move
+
+		stop = false;
+		uint32 bestmove{ bookmove ? book::get_move(pos) : (uint32)MOVE_NONE };
+		if (bestmove != MOVE_NONE)
 		{
-			stream >> chrono.moves_to_go;
-		}
-		else if (token == "wtime")
-		{
-			stream >> chrono.time[WHITE];
-			chrono.infinite = false;
-		}
-		else if (token == "btime")
-		{
-			stream >> chrono.time[BLACK];
-			chrono.infinite = false;
-		}
-		else if (token == "winc")
-		{
-			stream >> chrono.incr[WHITE];
-		}
-		else if (token == "binc")
-		{
-			stream >> chrono.incr[BLACK];
-		}
-		else if (token == "ponder")
-		{
-			engine::infinite = true;
-			chrono.infinite = false;
+			sync::cout << "bestmove " << move::algebraic(bestmove) << "\ninfo string book hit" << std::endl;
+			stop = true;
 		}
 
-		// special cases
+		// starting the search if there is no book move
 
-		else if (token == "searchmoves")
+		else
 		{
-			searchmoves(stream, pos);
-		}
-		else if (token == "nodes")
-		{
-			stream >> engine::limit.nodes;
-		}
-		else if (token == "depth")
-		{
-			stream >> engine::limit.depth;
-			engine::limit.depth = std::min(engine::limit.depth, lim::depth);
-		}
-		else if (token == "mate")
-		{
-			stream >> engine::limit.mate;
-		}
-		else if (token == "movetime")
-		{
-			stream >> chrono.movetime;
-		}
-		else if (token == "infinite")
-		{
-			engine::infinite = true;
+			bookmove = false;
+			analysis::reset();
+			threads.thread[MAIN]->std_thread = std::thread{ search::start, std::ref(threads), movetime };
 		}
 	}
 
-	searching = std::thread{ search, &pos, chrono.get_movetime(pos.turn) };
-}
+	void searchmoves(std::istringstream &stream, board &pos)
+	{
+		// parsing the 'go searchmoves' command
 
-void uci::setoption(std::istringstream &stream, board &pos)
-{
-	// parsing the 'setoption' command
+		std::string token;
+		while (stream >> token)
+		{
+			auto move{ move::encode(pos, token) };
+			if (move == MOVE_NONE)
+			{
+				std::string remains{ token };
+				while (stream >> token)
+					remains += " " + token;
 
-	std::string token, name, value;
-	stream >> name;
-	stream >> name;
+				stream.str(remains);
+				stream.clear();
+				break;
+			}
+			limit.moves.push_back(move);
+		}
+	}
 
-	while (stream >> token && token != "value")
-		name += " " + token;
-	stream >> value;
+	void go(std::istringstream &stream, thread_pool &threads, board &pos)
+	{
+		// applying specifications before starting the search after the 'go' command
 
-	// setting the new option
-	
-	if (name == "Hash")
-	{
-		auto new_hash{ stoi(value) };
-		engine::new_hash_size(std::min(new_hash, lim::hash));
-	}
-	else if (name == "Clear Hash")
-	{
-		engine::clear_hash();
-	}
-	else if (name == "Contempt")
-	{
-		auto contempt{ stoi(value) };
-		contempt = std::min(contempt, lim::max_contempt);
-		contempt = std::max(contempt, lim::min_contempt);
+		std::string token;
+		chronomanager chrono;
+		limits::infinite();
 
-		engine::contempt[pos.turn]  =  contempt;
-		engine::contempt[pos.xturn] = -contempt;
-	}
-	else if (name == "Ponder")
-	{
-		engine::ponder = value::boolean(value);
-	}
-	else if (name == "Move Overhead")
-	{
-		engine::overhead = std::min(stoi(value), lim::overhead);
-	}
-	else if (name == "UCI_Chess960")
-	{
-		engine::chess960 = value::boolean(value);
-	}
-	else if (name == "MultiPV")
-	{
-		engine::multipv = std::min(stoi(value), lim::multipv);
-	}
-	else if (name == "OwnBook")
-	{
-		engine::use_book  = value::boolean(value);
-		engine::book_move = value::boolean(value);
-	}
-	else if (name == "Best Book Line")
-	{
-		engine::best_book_line = value::boolean(value);
-	}
-	else if (name == "Book File")
-	{
-		engine::new_book(value);
-	}
-}
+		while (stream >> token)
+		{
+			if (token == "movestogo")
+			{
+				stream >> chrono.moves_to_go;
+			}
+			else if (token == "wtime")
+			{
+				stream >> chrono.time[WHITE];
+				chrono.infinite = false;
+			}
+			else if (token == "btime")
+			{
+				stream >> chrono.time[BLACK];
+				chrono.infinite = false;
+			}
+			else if (token == "winc")
+			{
+				stream >> chrono.incr[WHITE];
+			}
+			else if (token == "binc")
+			{
+				stream >> chrono.incr[BLACK];
+			}
+			else if (token == "ponder")
+			{
+				infinite = true;
+				chrono.infinite = false;
+			}
 
-void uci::position(std::istringstream &stream, board &pos)
-{
-	// reacting to the 'position' command
+			// special cases
 
-	std::string token, fen;
-	stream >> token;
+			else if (token == "searchmoves")
+			{
+				searchmoves(stream, pos);
+			}
+			else if (token == "nodes")
+			{
+				stream >> limit.nodes;
+			}
+			else if (token == "depth")
+			{
+				stream >> limit.depth;
+				limit.depth = value::minmax(limit.depth, 1, lim::depth);
+			}
+			else if (token == "mate")
+			{
+				stream >> limit.mate;
+			}
+			else if (token == "movetime")
+			{
+				stream >> chrono.movetime;
+			}
+			else if (token == "infinite")
+			{
+				infinite = true;
+			}
+		}
 
-	if (token == "startpos")
+		search(threads, pos, chrono.get_movetime(pos.turn));
+	}
+
+	void setoption(std::istringstream &stream, thread_pool &threads, board &pos)
 	{
-		fen = engine::startpos;
+		// parsing the 'setoption' command
+
+		std::string token, name, value;
+		stream >> name;
+		stream >> name;
+
+		while (stream >> token && token != "value")
+			name += " " + token;
+		stream >> value;
+		while (stream >> token)
+			value += " " + token;
+
+		// setting the new option
+
+		if (name == "Hash")
+		{
+			hash_size = hash::table.create(std::max(stoi(value), 1));
+		}
+		else if (name == "Clear Hash")
+		{
+			hash::table.clear();
+		}
+		else if (name == "Contempt")
+		{
+			auto new_contempt{ value::minmax(stoi(value), lim::min_contempt, lim::max_contempt) };
+			contempt[pos.turn]  =  new_contempt;
+			contempt[pos.xturn] = -new_contempt;
+		}
+		else if (name == "Threads")
+		{
+			thread_count = std::max(stoi(value), 1);
+			threads.resize(thread_count);
+			threads.start_all();
+		}
+		else if (name == "Ponder")
+		{
+			ponder = value::boolean(value);
+		}
+		else if (name == "Move Overhead")
+		{
+			overhead = value::minmax(stoi(value), 0, lim::overhead);
+		}
+		else if (name == "UCI_Chess960")
+		{
+			chess960 = value::boolean(value);
+		}
+		else if (name == "MultiPV")
+		{
+			multipv = value::minmax(stoi(value), 1, lim::multipv);
+		}
+		else if (name == "OwnBook")
+		{
+			use_book = bookmove = value::boolean(value);
+		}
+		else if (name == "Book File")
+		{
+			book::name = value;
+			open_book();
+		}
+		else if (name == "SyzygyPath")
+		{
+			syzygy.path = value;
+			syzygy::init_tablebases(syzygy.path);
+		}
+		else if (name == "SyzygyProbeDepth")
+		{
+			syzygy.depth = value::minmax(stoi(value), 1, lim::depth);
+		}
+		else if (name == "SyzygyProbeLimit")
+		{
+			syzygy.pieces = value::minmax(stoi(value), 0, lim::syzygy_pieces);
+		}
+		else if (name == "Syzygy50MoveRule")
+		{
+			syzygy.rule50 = value::boolean(value);
+		}
+	}
+
+	void position(std::istringstream &stream, board &pos)
+	{
+		// reacting to the 'position' command
+
+		std::string token, fen;
 		stream >> token;
+
+		if (token == "startpos")
+		{
+			fen = startpos;
+			stream >> token;
+		}
+		else if (token == "fen")
+		{
+			while (stream >> token && token != "moves")
+				fen += token + " ";
+		}
+
+		set_position(pos, fen);
+		if (token != "moves")
+			return;
+
+		// executing the move sequence
+
+		while (stream >> token)
+			game::new_move(pos, move::encode(pos, token));
 	}
-	else if (token == "fen")
+
+	void show_options(board &pos)
 	{
-		while (stream >> token && token != "moves")
-			fen += token + " ";
+		// reacting to the 'uci' command
+
+		sync::cout
+			<< "id name Monolith " << version_number
+			<< "\nid author Jonas Mayr\n"
+
+			<< "\noption name Threads type spin default " << uci::thread_count << " min 1 max " << lim::threads
+			<< "\noption name Ponder type check default " << value::boolean(ponder)
+			<< "\noption name Hash type spin default " << hash_size << " min 1 max " << lim::hash
+			<< "\noption name Clear Hash type button"
+			<< "\noption name UCI_Chess960 type check default " << value::boolean(chess960)
+			<< "\noption name MultiPV type spin default " << multipv << " min 1 max " << lim::multipv
+			<< "\noption name Contempt type spin default " << contempt[pos.turn]
+			<< " min " << lim::min_contempt << " max " << lim::max_contempt
+			<< "\noption name Move Overhead type spin default " << overhead << " min 0 max " << lim::overhead
+
+			<< "\noption name OwnBook type check default " << value::boolean(use_book)
+			<< "\noption name Book File type string default " << book::name
+
+			<< "\noption name SyzygyPath type string default " << syzygy.path
+			<< "\noption name SyzygyProbeDepth type spin default " << syzygy.depth << " min 1 max " << lim::depth
+			<< "\noption name SyzygyProbeLimit type spin default " << syzygy.pieces << " min 0 max " << lim::syzygy_pieces
+			<< "\noption name Syzygy50MoveRule type check default " << value::boolean(syzygy.rule50)
+
+			<< "\nuciok" << std::endl;
 	}
-
-	engine::set_position(pos, fen);
-	if (token != "moves")
-		return;
-
-	// executing the move sequence
-
-	while (stream >> token)
-		engine::new_move(pos, move::encode(pos, token));
 }
 
-void uci::show_options(board &pos)
+void uci::open_book()
 {
-	// reacting to the 'uci' command
+	// connecting to the PolyGlot opening book
 
-	sync::cout
-		<< "id name Monolith " << version_number
-		<< "\nid author Jonas Mayr\n"
+	bookmove = book::open();
+}
 
-		<< "\noption name Ponder type check default " << value::boolean(engine::ponder)
-		<< "\noption name OwnBook type check default " << value::boolean(engine::use_book)
-		<< "\noption name Book File type string default " << engine::get_book_name()
-		<< "\noption name Best Book Line type check default " << value::boolean(engine::best_book_line)
-		<< "\noption name Hash type spin default " << engine::hash_size << " min 1 max " << lim::hash
-		<< "\noption name Clear Hash type button"
-		<< "\noption name UCI_Chess960 type check default " << value::boolean(engine::chess960)
-		<< "\noption name MultiPV type spin default " << engine::multipv << " min 1 max " << lim::multipv
-		<< "\noption name Contempt type spin default " << engine::contempt[pos.turn]
-		<< " min " << lim::min_contempt << " max " << lim::max_contempt
-		<< "\noption name Move Overhead type spin default " << engine::overhead << " min 0 max " << lim::overhead
+void uci::set_position(board &pos, std::string fen)
+{
+	// setting a new position
 
-		<< "\nuciok" << std::endl;
+	pos.parse_fen(fen);
+	game::reset();
+	assert(uci::move_offset == 0);
+	quiet_hash[uci::move_offset] = pos.key;
+}
+
+void uci::new_game(board &pos)
+{
+	// responding to the 'ucinewgame' command
+
+	bookmove = use_book;
+	hash::table.clear();
+	search::reset();
+	set_position(pos, startpos);
 }
 
 void uci::loop()
 {
-	// initialising variables
+	// initializing board & thread objects
 
 	std::string input, token;
 	board pos;
-	std::thread searching;
-	engine::new_game(pos);
+	new_game(pos);
+	thread_pool threads(thread_count, pos);
+	threads.start_all();
 
-	// communication loop
-
-	do
+	do // communication loop
 	{
 		std::getline(std::cin, input);
 		std::istringstream stream(input);
@@ -354,12 +466,12 @@ void uci::loop()
 		}
 		else if (input == "stop")
 		{
-			thread::stop_if(searching);
-			engine::infinite = false;
+			threads.stop_search();
+			infinite = false;
 		}
 		else if (input == "ponderhit")
 		{
-			engine::infinite = false;
+			infinite = false;
 		}
 		else if (input == "isready")
 		{
@@ -367,54 +479,86 @@ void uci::loop()
 		}
 		else if (input == "ucinewgame")
 		{
-			if (thread::ignore(searching))
-				continue;
-			engine::new_game(pos);
+			if (!stop) continue;
+			threads.stop_search();
+			new_game(pos);
 		}
 		else if (token == "setoption")
 		{
-			if (thread::ignore(searching))
-				continue;
-			setoption(stream, pos);
+			if (!stop) continue;
+			threads.stop_search();
+			setoption(stream, threads, pos);
 		}
 		else if (token == "position")
 		{
-			if (thread::ignore(searching))
-				continue;
+			if (!stop) continue;
+			threads.stop_search();
 			position(stream, pos);
 		}
 		else if (token == "go")
 		{
-			if (thread::ignore(searching))
-				continue;
-			go(stream, searching, pos);
+			if (!stop) continue;
+			threads.stop_search();
+			go(stream, threads, pos);
 		}
 
 		// unofficial commands for debugging
 
-		else if (input == "bench")
+		else if (token == "bench")
 		{
-			bench::search();
+			// running a benchmark consisting of various search positions
+			// 'bench' or 'bench <positions.epd> <time in ms>'
+
+			if (!stop) continue;
+			int64 movetime{};
+			stream >> token;
+			stream >> movetime;
+			bench::search(token, movetime);
 		}
 		else if (token == "perft")
 		{
-			if(!(stream >> token) || token == "legal" || token == "pseudo")
+			// running perft on a set of positions
+			// 'perft legal' or 'perft pseudo' differentiates the move generation mode
+
+			if (!stop) continue;
+			if (!(stream >> token) || token == "legal" || token == "pseudo")
 				bench::perft(token);
 		}
 		else if (input == "eval")
 		{
-			engine::eval(pos);
+			// doing a itemized evaluation of the current position
+
+			if (!stop) continue;
+			pawn hash(false);
+			eval::itemise_eval(pos, hash);
 		}
 		else if (input == "board")
 		{
+			// displaying the current piece placement
+
+			if (!stop) continue;
 			display::position(pos);
 		}
 		else if (input == "summary")
 		{
-			engine::search_summary();
+			// outputting some statistics of the previous search
+
+			if (!stop) continue;
+			analysis::summary();
+		}
+
+		// unofficial command for tuning if the TUNE switch is on
+
+		else if (token == "tune")
+		{
+			// running an evaluation parameter tuning session
+			// 'tune <quiet-positions.epd> <thread-count>'
+
+			int thread_count{};
+			stream >> token;
+			stream >> thread_count;
+			texel::tune(token, thread_count);
 		}
 
 	} while (input != "quit");
-
-	thread::stop_if(searching);
 }

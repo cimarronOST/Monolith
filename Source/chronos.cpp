@@ -1,5 +1,5 @@
 /*
-  Monolith 0.4  Copyright (C) 2017 Jonas Mayr
+  Monolith 1.0  Copyright (C) 2017-2018 Jonas Mayr
 
   This file is part of Monolith.
 
@@ -18,31 +18,31 @@
 */
 
 
-#include "engine.h"
+#include "uci.h"
 #include "chronos.h"
 
-uint64 chronomanager::get_movetime(int turn)
+int64 chronomanager::get_movetime(int turn)
 {
 	// calculating the ideal search time for the current move
 
 	if (infinite)
-		return movetime - engine::overhead;
+		return movetime - uci::overhead;
 
-	auto max_time{ time[turn] + incr[turn] * (moves_to_go - 1) - engine::overhead };
-	auto target_time{ time[turn] / moves_to_go + incr[turn] - engine::overhead };
+	auto max_time{ time[turn] + incr[turn] * (moves_to_go - 1) - uci::overhead * moves_to_go };
+	auto target_time{ time[turn] / moves_to_go + incr[turn] - uci::overhead };
 
-	// assuming that more time is available through ponderhits
+	// assuming that more time is available through ponder-hits with pondering enabled
 
-	if (engine::ponder)
+	if (uci::ponder)
 		target_time = target_time * 4 / 3;
 
 	// applying a safety margin
 	// considering also bullet time controls
 
 	target_time = std::min(target_time, max_time);
-	movetime = target_time - std::min(target_time / 20, 50);
+	movetime = int64{ target_time - std::min(target_time / 20, 100) };
 
-	return std::max(movetime, 1ULL);
+	return std::max(movetime, 1LL);
 }
 
 void chronometer::start()
@@ -52,11 +52,19 @@ void chronometer::start()
 	start_time = std::chrono::system_clock::now();
 }
 
-uint64 chronometer::split()
+void chronometer::set(int64 &movetime)
+{
+	// resetting the counter & starting the clock
+
+	hits = 0;
+	max = movetime;
+	start();
+}
+
+int64 chronometer::elapsed() const
 {
 	// returning the elapsed time since start() in milliseconds
 
-	elapsed = std::chrono::duration_cast<std::chrono::duration<uint64, std::ratio<1, 1000>>>
+	return std::chrono::duration_cast<std::chrono::duration<int64, std::ratio<1, 1000>>>
 		(std::chrono::system_clock::now() - start_time).count();
-	return elapsed;
 }

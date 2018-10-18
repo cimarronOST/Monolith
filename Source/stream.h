@@ -1,5 +1,5 @@
 /*
-  Monolith 0.4  Copyright (C) 2017 Jonas Mayr
+  Monolith 1.0  Copyright (C) 2017-2018 Jonas Mayr
 
   This file is part of Monolith.
 
@@ -25,7 +25,7 @@
 
 #include "main.h"
 
-// overriding the streambuffer
+// overriding the standard stream-buffer
 
 struct syncbuf : std::streambuf
 {
@@ -48,36 +48,33 @@ struct syncbuf : std::streambuf
 
 };
 
+// making sure a log-file is written if the tuning flag is set
+
+#if defined(TUNE)
+  #define LOG
+#endif
+
 // directing output to a log-file
 
 #if defined(LOG)
-#define sync sync_log
+  #define sync sync_log
 #else
-#define sync std
+  #define sync std
 #endif
 
-// synchronising a filestream object with the standard stream output
+// synchronizing a file-stream object with the standard stream output
 
-class sync_log
+namespace sync_log
 {
-	static syncbuf sbuf;
-
-public:
-
-	static std::ofstream fout;
-	static std::ostream  cout;
-};
+	extern std::ostream cout;
+}
 
 // manipulating the file path
 
-class filestream
+namespace filestream
 {
-public:
+	extern std::string fullpath;
 
-	static std::string fullpath;
-	static const std::string name;
-
-	static void set_path(char *argv[]);
-
-	static bool open();
-};
+	void set_path(char *argv[]);
+	bool open();
+}

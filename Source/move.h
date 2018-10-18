@@ -1,5 +1,5 @@
 /*
-  Monolith 0.4  Copyright (C) 2017 Jonas Mayr
+  Monolith 1.0  Copyright (C) 2017-2018 Jonas Mayr
 
   This file is part of Monolith.
 
@@ -22,11 +22,11 @@
 
 #include "main.h"
 
-// concerning move encoding
+// arranging the internal move encoding
 
 namespace move
 {
-	// encoding a move into 32 bits
+	// decoding a move into 24 bytes
 
 	struct elements
 	{
@@ -38,6 +38,8 @@ namespace move
 		int turn;
 	};
 
+	static_assert(sizeof(elements) == 24, "decoded move != 24 bytes");
+
 	int sq1(uint32 move);
 	int sq2(uint32 move);
 	int flag(uint32 move);
@@ -46,15 +48,38 @@ namespace move
 	int turn(uint32 move);
 
 	elements decode(uint32 move);
+
+	// encoding a move into 3 bytes (but storing it into 4 bytes)
+
 	uint32 encode(int sq1, int sq2, int flag, int piece, int victim, int turn);
 
-	// determining some move properties
+	// bundling the principal variation
 
-	bool is_castling(int flag);
-	bool is_castling(uint32 move);
-	bool is_promo(uint32 move);
-	bool is_quiet(uint32 move);
+	struct variation
+	{
+		uint32 move[lim::depth];
+		int depth;
+		int seldepth;
+		int score;
+		bool wrong;
+	};
 
-	bool is_push_to_7th(uint32 move);
-	bool is_pawn_advance(uint32 move);
+	// determining important move properties
+
+	bool castling(int flag);
+	bool castling(uint32 move);
+	bool capture(uint32 move);
+	bool promo(uint32 move);
+	bool quiet(uint32 move);
+
+	bool push_to_7th(uint32 move);
+	bool pawn_advance(uint32 move);
+
+	int promo_piece(uint32 move);
+	int promo_piece(int flag);
+	int castle_side(int flag);
+
+	// converting the move into algebraic notation as specified by the UCI-protocol
+
+	std::string algebraic(uint32 move);
 }

@@ -1,5 +1,5 @@
 /*
-  Monolith 0.4  Copyright (C) 2017 Jonas Mayr
+  Monolith 1.0  Copyright (C) 2017-2018 Jonas Mayr
 
   This file is part of Monolith.
 
@@ -20,29 +20,63 @@
 
 #pragma once
 
-// debug switches
+// globally needed libraries
 
-#define POPCNT
-#define NDEBUG
-#define NDEBUG_EXP
-#define NLOG
-
-// global libraries
-
+#include <vector>
+#include <cmath>
+#include <cassert>
+#include <limits>
 #include <iostream>
 #include <string>
 #include <algorithm>
-#include <cassert>
 
-// defining runtime-expensive assertions
+// defining runtime-expensive debug assertions
 
 #if defined(DEBUG_EXP)
-#define assert_exp(x) assert(x)
+  #define assert_exp(x) assert(x)
 #else
-#define assert_exp(x) ((void)0)
+  #define assert_exp(x) ((void)0)
 #endif
 
-// global enumerators
+// type definitions
+
+typedef unsigned char uint8;
+typedef signed   char  int8;
+
+typedef unsigned short uint16;
+typedef signed   short  int16;
+
+typedef unsigned int uint32;
+typedef signed   int  int32;
+
+typedef unsigned long long uint64;
+typedef signed   long long  int64;
+
+static_assert(sizeof(uint8)  == 1, "char != 1 byte");
+static_assert(sizeof(uint16) == 2, "short != 2 bytes");
+static_assert(sizeof(uint32) == 4, "int != 4 bytes");
+static_assert(sizeof(uint64) == 8, "long long != 8 bytes");
+
+// limiting constants
+
+namespace lim
+{
+	constexpr int64 nodes   { std::numeric_limits<int64>::max() };
+	constexpr int64 movetime{ std::numeric_limits<int64>::max() };
+
+	constexpr int threads{ 16 };
+	constexpr int depth{ 110 };
+	constexpr int dtz{ 1048 };
+	constexpr int moves{ 256 };
+	constexpr int multipv{ moves };
+	constexpr int hash{ 16384 };
+	constexpr int overhead{ 5000 };
+	constexpr int min_contempt{ -100 };
+	constexpr int max_contempt{  100 };
+	constexpr int syzygy_pieces{ 6 };
+}
+
+// globally needed enumerators
 
 enum square_index
 {
@@ -56,15 +90,9 @@ enum square_index
 	H8, G8, F8, E8, D8, C8, B8, A8
 };
 
-enum file_index
-{
-	H, G, F, E, D, C, B, A
-};
+enum file_index{ H, G, F, E, D, C, B, A };
 
-enum rank_index
-{
-	R1, R2, R3, R4, R5, R6, R7, R8
-};
+enum rank_index{ R1, R2, R3, R4, R5, R6, R7, R8 };
 
 enum piece_index
 {
@@ -83,16 +111,30 @@ enum pawn_move_index
 	ENPASSANT = 9
 };
 
-enum castling
+enum eval_index
 {
-	SHORT = 10,
-	LONG = 11
+	MATERIAL = 6,
+	MOBILITY = 7,
+	PASSED = 8,
+	THREATS = 9
 };
 
-enum castling_square
+enum pv_index { PREVIOUS = lim::depth };
+
+enum side_index
 {
-	PROHIBITED = 64
+	WHITE,
+	BLACK,
+	BOTH
 };
+
+enum castling_side
+{
+	CASTLE_SHORT = 10,
+	CASTLE_LONG = 11
+};
+
+enum castling_square{ PROHIBITED = 64 };
 
 enum promo_mode
 {
@@ -101,27 +143,6 @@ enum promo_mode
 	PROMO_BISHOP = 13,
 	PROMO_ROOK = 14,
 	PROMO_QUEEN = 15
-};
-
-enum eval_index
-{
-	MATERIAL = 6,
-	MOBILITY = 7,
-	PASSED = 8
-};
-
-enum sliding_type
-{
-	ROOK,
-	BISHOP,
-	QUEEN
-};
-
-enum side_index
-{
-	WHITE,
-	BLACK,
-	BOTH
 };
 
 enum gen_mode
@@ -137,29 +158,34 @@ enum gen_stage
 	KILLER,
 	QUIET,
 	LOOSING,
+	DEFERRED,
 	TACTICAL,
 	CHECK,
 	EVASION
 };
 
-enum game_stage
+enum game_stage{ MG, EG };
+
+enum sliding_type
 {
-	MG,
-	EG
+	ROOK,
+	BISHOP,
+	QUEEN
 };
 
 enum score_type
 {
-	NO_SCORE  = -30000,
-	MIN_SCORE = -20000,
-	MAX_SCORE =  20000,
-	MATE_SCORE = 18951,
+	SCORE_NONE         = -32100,
+	SCORE_CURSED_WIN   =  2,
+	SCORE_DRAW         =  0,
+	SCORE_BLESSED_LOSS = -2,
+	SCORE_MATE         =  32000,
+	SCORE_LONGEST_MATE =  28000,
+	SCORE_TB           =  16000,
+	SCORE_TBMATE       =  16000
 };
 
-enum move_type
-{
-	NO_MOVE
-};
+enum move_type{ MOVE_NONE };
 
 enum bound_type
 {
@@ -168,63 +194,6 @@ enum bound_type
 	LOWER = 3
 };
 
-// types
+enum exception_type{ STOP_SEARCHING = 1 };
 
-typedef unsigned long long uint64;
-typedef unsigned int uint32;
-typedef unsigned short uint16;
-typedef unsigned char uint8;
-
-typedef signed short int16;
-
-// limiting constants
-
-namespace lim
-{
-	const uint64 nodes{ ~0ULL };
-	const uint64 movetime{ ~0ULL };
-
-	const int depth{ 128 };
-
-	const int period{ depth + 128 };
-	const int moves{ 256 };
-	const int multipv{ moves };
-
-	const int hash{ 4096 };
-	const int overhead{ 1000 };
-	const int min_contempt{ -100 };
-	const int max_contempt{  100 };
-}
-
-// relativating white's perspective
-
-namespace relative
-{
-	inline int rank(int rank, int turn)
-	{
-		return turn == WHITE ? rank : 7 - rank;
-	}
-}
-
-// square functions
-
-namespace square
-{
-	const uint64 white{ 0xaa55aa55aa55aa55 };
-	const uint64 black{ 0x55aa55aa55aa55aa };
-
-	inline int file(int sq)
-	{
-		return sq & 7;
-	}
-
-	inline int rank(int sq)
-	{
-		return sq >> 3;
-	}
-
-	inline int distance(int sq1, int sq2)
-	{
-		return std::max(abs(file(sq1) - file(sq2)), abs(rank(sq1) - rank(sq2)));
-	}
-}
+enum index_type{ MAIN };

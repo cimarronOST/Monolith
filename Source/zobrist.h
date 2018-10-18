@@ -1,5 +1,5 @@
 /*
-  Monolith 0.4  Copyright (C) 2017 Jonas Mayr
+  Monolith 1.0  Copyright (C) 2017-2018 Jonas Mayr
 
   This file is part of Monolith.
 
@@ -20,22 +20,23 @@
 
 #pragma once
 
+#include "position.h"
 #include "main.h"
 
-// Zobrist hashing used for transposition table & pawn table & repetition detection
+// Zobrist hashing used for transposition table & pawn table & endgame tablebases & repetition detection
 
-class zobrist
+namespace zobrist
 {
-public:
+	extern uint64 rand_key[781];
 
-	static const struct offset
+	constexpr struct offset
 	{
 		int castling;
 		int ep;
 		int turn;
-	} off;
-
-	static uint64 rand_key[781];
+	} off{ 768, 772, 780 };
 	
-	static void init_keys();
-};
+	void init_keys();
+	uint64 material_key(board& pos, int mirror);
+	uint64 material_key(int pieces[], int mirror);
+}

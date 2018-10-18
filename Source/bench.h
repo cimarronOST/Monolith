@@ -1,5 +1,5 @@
 /*
-  Monolith 0.4  Copyright (C) 2017 Jonas Mayr
+  Monolith 1.0  Copyright (C) 2017-2018 Jonas Mayr
 
   This file is part of Monolith.
 
@@ -22,10 +22,10 @@
 
 #include "main.h"
 
-// set of positions to test performance and correctness
+// small benchmark framework containing sets of test positions
 
 namespace bench
 {
-	void perft(std::string mode);
-	void search();
+	void  perft(std::string mode);
+	void search(std::string &filename, int64 &time);
 }

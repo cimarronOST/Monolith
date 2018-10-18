@@ -1,5 +1,5 @@
 /*
-  Monolith 0.4  Copyright (C) 2017 Jonas Mayr
+  Monolith 1.0  Copyright (C) 2017-2018 Jonas Mayr
 
   This file is part of Monolith.
 
@@ -20,12 +20,11 @@
 
 #pragma once
 
-#include <vector>
-
+#include "attack.h"
 #include "position.h"
 #include "main.h"
 
-// staged move generation, can be legal or pseudolegal
+// staged move generation, can generate both legal and pseudolegal moves
 
 class gen
 {
@@ -37,46 +36,39 @@ public:
 	{
 		if (mode == LEGAL)
 		{
-			find_pins();
-			find_evasions();
+			attack::pins(pos, pos.turn, pos.turn, pin);
+			evasions = attack::evasions(pos);
 		}
 		else
 		{
 			assert(mode == PSEUDO);
-			evasions = ~0ULL;
+			assert(evasions == std::numeric_limits<uint64>::max());
 		}
 	}
 
 private:
 
-	// speeding up minor piece check generation
+	// speeding up minor piece check generation & holding information for legal move-generation
 
-	uint64 king_color{ ~0ULL };
-
-	// preparing legal moves
-
-	uint64 pin[64]{ };
-	uint64 evasions;
-
-	void find_pins();
-	void find_evasions();
+	uint64 king_color{ std::numeric_limits<uint64>::max() };
+	uint64 evasions{   std::numeric_limits<uint64>::max() };
+	uint64 pin[64]{};
 
 public:
 
 	// movelist
 
-	uint32 move[lim::moves];
-
-	struct count
+	uint32 move[lim::moves]{};
+	int moves{};
+	struct move_count
 	{
-		int moves{ };
-		int capture{ };
-		int promo{ };
-		int loosing{ };
-	} cnt;
+		int capture;
+		int promo;
+		int loosing;
+	} count{};
 
-	bool in_list(uint32 move);
-	uint32 *find(uint32 move);
+	bool find(uint32 move);
+	bool empty() const;
 
 	// generating staged moves as commanded by movepick
 
@@ -85,17 +77,19 @@ public:
 
 	int gen_hash(uint32 &hash_move);
 	template<promo_mode promo> int gen_tactical();
-	int gen_killer(uint32 killer[][2], int depth, uint32 counter);
+	int gen_killer(uint32 killer[], uint32 counter);
 	int gen_quiet();
-	int gen_loosing();
 	int gen_check();
+
+	int restore_loosing();
+	int restore_deferred(uint32 deferred[]);
 
 private:
 
-	// actual move generation functions
+	// actual move generating functions
 
 	template<promo_mode promo> void pawn_promo();
-	void pawn_capt();
+	void pawn_capture();
 	void pawn_quiet(uint64 mask);
 
 	void knight(uint64 mask);

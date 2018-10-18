@@ -1,5 +1,5 @@
 /*
-  Monolith 0.4  Copyright (C) 2017 Jonas Mayr
+  Monolith 1.0  Copyright (C) 2017-2018 Jonas Mayr
 
   This file is part of Monolith.
 
@@ -20,17 +20,17 @@
 
 #pragma once
 
-#include "position.h"
 #include "main.h"
 
-// static exchange evaluation
+// tuning evaluation parameters with the texel tuning method
 
-namespace see
+namespace texel
 {
-	int eval(const board &pos, uint32 move);
+#if defined(TUNE)
+	void tune(std::string &epd_file, int thread_count);
 
-	// fixed independend piece values
+#else
+	inline void tune(std::string&, int) {}
 
-	const int value[]
-	{ 100, 325, 325, 500, 950, 10000, 100, 0 };
+#endif
 }

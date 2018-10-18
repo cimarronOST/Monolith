@@ -1,5 +1,5 @@
 /*
-  Monolith 0.4  Copyright (C) 2017 Jonas Mayr
+  Monolith 1.0  Copyright (C) 2017-2018 Jonas Mayr
 
   This file is part of Monolith.
 
@@ -23,30 +23,36 @@
 #include "position.h"
 #include "main.h"
 
-// bitboard attacking functions
+// attacking functions using bitboards
 
-class attack
+namespace attack
 {
-public:
+	// fixed rough value of pieces in centipawns
 
-	// attacking bitboards
+	constexpr int value[]{ 100, 325, 325, 500, 950, 10000, 0, 0 };
 
-	static uint64 in_front[2][64];
-	static uint64 slide_map[2][64];
-	static uint64 knight_map[64];
-	static uint64 king_map[64];
+	// pre-calculated attack bitboards
 
-	static void fill_tables();
+	extern uint64 in_front[2][64];
+	extern uint64 slide_map[2][64];
+	extern uint64 knight_map[64];
+	extern uint64 king_map[64];
 
-	// detecting check & generating attacks
+	void fill_tables();
 
-	static uint64 check(const board &pos, int turn, uint64 all_sq);
+	// detecting check & finding pins and evasion squares
 
-	template<sliding_type sl> static uint64 by_slider(int sq, uint64 occ);
-	static uint64 by_pawns(const board &pos, int turn);
+	uint64 check(const board &pos, int turn, uint64 all_sq);
+	uint64 evasions(const board &pos);
+	void pins(const board &pos, int side_king, int side_pin, uint64 pin_moves[]);
 
-	// assisting SEE
+	// generating attacks
 
-	static uint64 to_square(const board &pos, int sq);
-	static uint64 add_xray(const board &pos, int sq, uint64 &occ);
-};
+	uint64 by_piece(int piece, int sq, int side, const uint64 &occ);
+	template<sliding_type sl> uint64 by_slider(int sq, uint64 occ);
+	uint64 by_pawns(const board &pos, int turn);
+	
+	// doing a static exchange evaluation
+
+	int see(const board &pos, uint32 move);
+}

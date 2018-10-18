@@ -1,5 +1,5 @@
 /*
-  Monolith 0.4  Copyright (C) 2017 Jonas Mayr
+  Monolith 1.0  Copyright (C) 2017-2018 Jonas Mayr
 
   This file is part of Monolith.
 
@@ -24,39 +24,36 @@
 
 #include "main.h"
 
-// allocating the searchtime
+// allocating the searchtime for the current move
 
 class chronomanager
 {
 public:
-
-	chronomanager() : time{ }, incr{ }, moves_to_go{ 50 }, movetime{ lim::movetime }, infinite{ true } { }
+	chronomanager() : time{}, incr{}, moves_to_go{ 50 }, movetime{ lim::movetime }, infinite{ true } { }
 
 	int time[2];
 	int incr[2];
 	int moves_to_go;
-	uint64 movetime;
+	int64 movetime;
 	bool infinite;
 
-	uint64 get_movetime(int turn);
+	int64 get_movetime(int turn);
 };
 
-// internal clock
+// accurate internal clock
 
 class chronometer
 {
 private:
-
 	std::chrono::time_point<std::chrono::system_clock> start_time;
 
 public:
-
 	chronometer() { start(); }
 
-	int hits{ };
-	uint64 max{ };
-	uint64 elapsed{ };
+	int hits{};
+	int64 max{};
 
 	void start();
-	uint64 split();
+	void set(int64 &movetime);
+	int64 elapsed() const;
 };

@@ -1,5 +1,5 @@
 /*
-  Monolith 0.4  Copyright (C) 2017 Jonas Mayr
+  Monolith 1.0  Copyright (C) 2017-2018 Jonas Mayr
 
   This file is part of Monolith.
 
@@ -18,36 +18,64 @@
 */
 
 
+#include "move.h"
+#include "stream.h"
+#include "movepick.h"
+#include "utilities.h"
+#include "bit.h"
+#include "syzygy.h"
 #include "movegen.h"
 #include "chronos.h"
-#include "move.h"
-#include "notation.h"
 #include "attack.h"
-#include "see.h"
 #include "trans.h"
 #include "eval.h"
-#include "engine.h"
+#include "uci.h"
 #include "search.h"
 
 namespace
 {
 	struct node_count
 	{
-		uint64 cnt{ };
-		uint64 fail_high{ };
-		uint64 fail_high_1st{ };
-		uint64 total{ };
-		uint64 qs{ };
-	} nodes;
+		int64 fail_high;
+		int64 fail_high_1;
+		int64 qs;
 
-	uint64 searchtime{ };
+		int64 total_time;
+		int64 total_count;
+		int64 total_tbhit;
+	} nodes{};
 }
 
-namespace position
+namespace
 {
-	bool legal(board &pos)
+	int64 perft(board &pos, int depth, const gen_mode mode)
 	{
-		return attack::check(pos, pos.xturn, pos.pieces[KINGS] & pos.side[pos.xturn]);
+		// movegen performance test
+
+		if (depth == 0) return 1;
+
+		int64 new_nodes{};
+		gen list(pos, mode);
+		list.gen_all();
+		list.gen_all();
+		board saved(pos);
+
+		for (int i{}; i < list.moves; ++i)
+		{
+			assert_exp(pos.pseudolegal(list.move[i]));
+
+			pos.new_move(list.move[i]);
+			assert_exp(mode == PSEUDO || pos.legal());
+
+			if (mode == PSEUDO && !pos.legal())
+			{
+				pos.revert(saved);
+				continue;
+			}
+			new_nodes += perft(pos, depth - 1, mode);
+			pos.revert(saved);
+		}
+		return new_nodes;
 	}
 }
 
@@ -55,154 +83,121 @@ namespace position
 
 void analysis::reset()
 {
-	trans::hash_hits = 0;
-	searchtime = 0ULL;
+	// resetting analysis-parameters and all node counters
 
-	nodes.fail_high = 0;
-	nodes.fail_high_1st = 0;
-	nodes.total = 0;
-	nodes.qs = 0;
+	trans::hash_hits = 0;
+	nodes = node_count{};
 }
 
 void analysis::summary()
 {
+	// displaying some summarizing statistics of the performed search(es)
+
 	sync::cout.precision(1);
 	sync::cout << std::fixed
-		<< "time            : " << searchtime << " ms\n"
-		<< "nodes           : " << nodes.total << "\n"
-		<< "nps             : " << nodes.total / std::max(searchtime, 1ULL) << " kN/s"
+		<< "time          : " << nodes.total_time << " ms\n"
+		<< "nodes         : " << nodes.total_count << "\n"
+		<< "nps           : " << nodes.total_count / std::max(nodes.total_time, 1LL) << " kN/s\n"
+		<< "tb hits       : " << nodes.total_tbhit
 		<< std::endl;
 
-	if (nodes.total > 0)
+	if (nodes.total_count > 0)
 	{
 		sync::cout
-			<< "hash hits       : " << trans::hash_hits * 1000 / nodes.total / 10.0 << " %\n"
-			<< "qs nodes        : " << nodes.qs * 1000 / nodes.total / 10.0 << " %"
+			<< "hash hits     : " << trans::hash_hits * 1000 / nodes.total_count / 10.0 << " %\n"
+			<< "qs nodes      : " << nodes.qs * 1000 / nodes.total_count / 10.0 << " %"
 			<< std::endl;
 	}
 	if (nodes.fail_high > 0)
 	{
 		sync::cout
-			<< "cutoff 1st move : " << nodes.fail_high_1st * 1000 / nodes.fail_high / 10.0 << " %"
+			<< "cutoff move 1 : " << nodes.fail_high_1 * 1000 / nodes.fail_high / 10.0 << " %"
 			<< std::endl;
 	}
 }
 
-void analysis::root_perft(board &pos, int depth, const gen_mode mode)
+void analysis::perft(board &pos, int depth, const gen_mode mode)
 {
-	// starting the movegen performance test
+	// starting perft which is essentially a correctness test of the move-generator
 
 	assert(depth >= 1 && depth <= lim::depth);
 	assert(mode == LEGAL || mode == PSEUDO);
 
 	chronometer chrono;
-	nodes.cnt = 0;
+	int64 all_nodes{};
 	sync::cout.precision(3);
 
-	for (auto d{ 1 }; d <= depth; ++d)
+	for (int d{ 1 }; d <= depth; ++d)
 	{
 		sync::cout << "perft " << d << ": ";
 
-		auto new_nodes{ perft(pos, d, mode) };
-		chrono.split();
-		nodes.cnt += new_nodes;
+		auto new_nodes{ ::perft(pos, d, mode) };
+		auto time{ chrono.elapsed() };
+		all_nodes += new_nodes;
 
 		sync::cout << new_nodes
-			<< " time " << chrono.elapsed
-			<< " nps " << std::fixed << nodes.cnt / std::max(chrono.elapsed, 1ULL) << " kN/s"
+			<< " time " << time
+			<< " nps " << std::fixed << all_nodes / std::max(time, 1LL) << " kN/s"
 			<< std::endl;
 	}
-	nodes.total += nodes.cnt;
-	searchtime += chrono.split();
-}
-
-uint64 analysis::perft(board &pos, int depth, const gen_mode mode)
-{
-	if (depth == 0) return 1;
-
-	uint64 new_nodes{};
-	gen list(pos, mode);
-	list.gen_all();
-	board saved(pos);
-
-	for (auto i{ 0 }; i < list.cnt.moves; ++i)
-	{
-		assert_exp(pos.pseudolegal(list.move[i]));
-
-		pos.new_move(list.move[i]);
-		assert_exp(mode == PSEUDO || position::legal(pos));
-
-		if (mode == PSEUDO && !position::legal(pos))
-		{
-			pos.revert(saved);
-			continue;
-		}
-		new_nodes += perft(pos, depth - 1, mode);
-		pos.revert(saved);
-	}
-	return new_nodes;
-}
-
-// actual search
-
-namespace
-{
-	// triangular pv table & position hash table & time management
-
-	struct evolving_pv{ uint32 pv[lim::depth][lim::depth]{ }; } evolving;
-	uint64 hash[256 + lim::depth]{ };
-	chronometer chrono;
-
-	// move ordering tables
-
-	sort::kill_list killer{ };
-	sort::hist_list history{ };
-
-	uint32 counter_move[6][64]{ };
-}
-
-namespace init
-{
-	void search()
-	{
-		// resetting search parameters
-
-		nodes.cnt = 0;
-		for (auto i{ 0 }; i <= engine::move_offset; ++i)
-			hash[i] = engine::quiet_hash[i];
-
-		for (auto &i : evolving.pv) for (auto &j : i) j = NO_MOVE;
-		for (auto &i : counter_move) for (auto &j : i) j = NO_MOVE;
-		for (auto &i : killer.list) for (auto &j : i) j = NO_MOVE;
-		for (auto &i : history.list) for (auto &j : i) for (auto &k : j) k = 1000ULL;
-	}
+	nodes.total_count += all_nodes;
+	nodes.total_time  += chrono.elapsed();
 }
 
 namespace score
 {
+	// analyzing & adjusting the search score
+
+	bool draw(int score)
+	{
+		return std::abs(score) == uci::contempt[WHITE];
+	}
+
 	bool mate(int score)
 	{
-		return abs(score) > MATE_SCORE;
+		assert(score != SCORE_NONE);
+		return std::abs(score) > SCORE_LONGEST_MATE;
 	}
 
-	bool mate_limit(int score)
+	bool longest_mate(int score)
 	{
-		return MAX_SCORE - score <= engine::limit.mate * 2;
+		return SCORE_MATE - score <= uci::limit.mate * 2;
 	}
 
-	bool refineable(int score, int hash_score, int bound)
+	bool refinable(int score, int hash_score, int bound)
 	{
-		return hash_score != NO_SCORE
+		return hash_score != SCORE_NONE
 			&& (bound == EXACT || (bound == LOWER && hash_score > score) || (bound == UPPER && hash_score < score));
+	}
+
+	namespace tb
+	{
+		bool mate(int score)
+		{
+			return std::abs(score) >= SCORE_TBMATE - lim::depth && !score::mate(score);
+		}
+
+		bool refinable(int score, int dtz_score)
+		{
+			return !(dtz_score == SCORE_TB && score == SCORE_DRAW) && !score::mate(score);
+		}
+
+		void adjust(int &score, int tb_score)
+		{
+			if (score == SCORE_TB) score = tb_score;
+			if (score  > SCORE_TB && score < SCORE_LONGEST_MATE) score -= 2 * SCORE_TB;
+		}
 	}
 }
 
 namespace move
 {
-	bool is_killer(uint32 move, uint32 counter, int curr_depth)
+	// analyzing the move
+
+	bool killer(uint32 move, uint32 counter, uint32 killer[])
 	{
-		return move == killer.list[curr_depth][0]
-			|| move == killer.list[curr_depth][1]
+		return move == killer[0]
+			|| move == killer[1]
 			|| move == counter;
 	}
 
@@ -210,7 +205,7 @@ namespace move
 	{
 		return (gives_check && (pv_node || depth <= 4))
 			|| (pv_node && pos.recapture(move))
-			|| (pv_node && move::is_push_to_7th(move));
+			|| (pv_node && move::push_to_7th(move));
 	}
 }
 
@@ -218,67 +213,73 @@ namespace pv
 {
 	int get_seldepth(uint32 pv_move[], int seldepth, int depth)
 	{
-		// retrieving the selective depth
+		// retrieving the selective depth, i.e. the highest depth reached
 
 		auto d{ depth };
-		while (d < lim::depth - 1 && pv_move[d] != NO_MOVE)
+		while (d < lim::depth - 1 && pv_move[d] != MOVE_NONE)
 			d += 1;
 		return std::max(seldepth, d);
 	}
 
-	void prune(search::variation &pv, board pos)
+	void synchronize(sthread &thread, int multipv)
 	{
-		// pruning wrong principal variation entries
+		// synchronizing the thread's provisional PV with its triangular PV-table
 
-		for (pv.maxdepth = 0; pv.maxdepth < lim::depth && pv.move[pv.maxdepth] != NO_MOVE; pv.maxdepth += 1)
-		{
-			if (!pos.pseudolegal(pv.move[pv.maxdepth]))
-				break;
+		auto &pv{ thread.pv[multipv].move };
+		auto &tri_pv{ thread.tri_pv[PREVIOUS] };
+		int d{};
 
-			pos.new_move(pv.move[pv.maxdepth]);
-			if (!position::legal(pos))
-				break;	
-		}
-		for (auto d{ pv.maxdepth }; d < lim::depth && pv.move[d] != NO_MOVE; pv.move[d++] = NO_MOVE);
+		for ( ;     pv[d] != MOVE_NONE; ++d) tri_pv[d] = pv[d];
+		for ( ; tri_pv[d] != MOVE_NONE; ++d) tri_pv[d] = MOVE_NONE;
 	}
 
-	void store(search::variation &pv, board pos)
+	void prune(sthread &thread, int multipv, board pos)
 	{
-		// storign the principal variation in the transposition table
+		// pruning redundant PV-moves
 
-		assert(pv.score != NO_SCORE);
-		auto score{ pv.score };
-
-		for (auto d{ 0 }; d < lim::depth && pv.move[d] != NO_MOVE; ++d, score = -score)
+		auto &pv{ thread.pv[multipv] };
+		auto draw{ score::draw(pv.score) };
+		int d{};
+		for ( ; d < lim::depth && pv.move[d] != MOVE_NONE; ++d)
 		{
-			assert(pv.maxdepth - d > 0);
-
-			trans::store(pos, pv.move[d], score, EXACT, 0, d);
+			if (draw && d >= 1)
+			{
+				auto move_idx{ uci::move_offset + d };
+				thread.rep_hash[move_idx] = pos.key;
+				if (pos.draw(thread.rep_hash, move_idx))
+					break;
+			}
+			if (!pos.pseudolegal(pv.move[d])) break;
 			pos.new_move(pv.move[d]);
-			assert(position::legal(pos));
+			if (!pos.legal()) break;
 		}
+		for ( ; d < lim::depth && pv.move[d] != MOVE_NONE; ++d)
+			pv.move[d] = MOVE_NONE;
 	}
 
-	void rearrange(std::vector<search::variation> &pv)
+	void rearrange(std::vector<move::variation> &pv)
 	{
-		// sorting multi principal variations
+		// sorting the multiple PVs
 
-		std::stable_sort(pv.begin(), pv.end(), [&](search::variation a, search::variation b) { return a.score > b.score; });
+		std::stable_sort(pv.begin(), pv.end(), [&](move::variation a, move::variation b) { return a.score > b.score; });
 	}
 }
 
 namespace null
 {
-	void make_move(board &pos, search::search_stack *stack)
+	void make_move(board &pos, sthread::sstack *stack)
 	{
-		stack->copy.ep = 0ULL;
-		stack->copy.capture = 0;
+		// doing a "null move"
+
+		stack->copy = sthread::sstack::null_copy{};
 		pos.null_move(stack->copy.ep, stack->copy.capture);
 		(stack + 1)->no_pruning = true;
 	}
 
-	void revert_move(board &pos, search::search_stack *stack)
+	void revert_move(board &pos, sthread::sstack *stack)
 	{
+		// reverting the "null move"
+
 		pos.revert_null_move(stack->copy.ep, stack->copy.capture);
 		(stack + 1)->no_pruning = false;
 	}
@@ -290,727 +291,999 @@ namespace output
 
 	std::string score(int score)
 	{
+		if (score == SCORE_NONE)
+			return "";
 		return score::mate(score)
-			? "mate " + std::to_string((score > MATE_SCORE ? MAX_SCORE + 1 - score : MIN_SCORE - 1 - score) / 2)
-			: "cp " + std::to_string(score);
+			? "mate " + std::to_string((score > SCORE_LONGEST_MATE ? SCORE_MATE + 1 - score : -SCORE_MATE - 1 - score) / 2)
+			: "cp "   + std::to_string(score);
 	}
 
 	std::string show_multipv(int pv)
 	{
-		if (engine::multipv > 1)
-			return " multipv " + std::to_string(pv);
+		return uci::multipv > 1 ? " multipv " + std::to_string(pv) : "";
+	}
+
+	void variation(move::variation &pv)
+	{
+		if (pv.wrong)
+			sync::cout << move::algebraic(pv.move[0]);
 		else
-			return "";
+		{
+			for (int d{}; pv.move[d] != MOVE_NONE; ++d)
+				sync::cout << move::algebraic(pv.move[d]) << " ";
+		}
 	}
 
-	void variation(uint32 pv_move[])
+	void info(sthread &thread, int move_cnt)
 	{
-		for (auto d{ 0 }; pv_move[d] != NO_MOVE; ++d)
-			sync::cout << notation::algebraic(pv_move[d]) << " ";
-	}
+		assert(thread.main);
 
-	void info(std::vector<search::variation> &pv)
-	{
-		if (engine::multipv > 1)
-			pv::rearrange(pv);
+		if (uci::multipv > 1)
+			pv::rearrange(thread.pv);
 
-		for (auto idx{ 0 }; idx < engine::multipv; ++idx)
+		auto time { thread.chrono.elapsed() };
+		auto nodes{ thread.get_nodes() };
+
+		for (int i{}; i < uci::multipv && i < move_cnt; ++i)
 		{
 			sync::cout << "info"
-				<< " depth " << pv[idx].mindepth
-				<< " seldepth " << pv[idx].seldepth
-				<<   show_multipv(idx + 1)
-				<< " score " << score(pv[idx].score)
-				<< " time " << chrono.elapsed
-				<< " nodes " << nodes.cnt
-				<< " nps " << nodes.cnt * 1000 / std::max(chrono.elapsed, 1ULL)
-				<< " hashfull " << trans::hashfull()
-				<< " pv "; variation(pv[idx].move);
-
+				<< " depth " << thread.pv[i].depth
+				<< " seldepth " << thread.pv[i].seldepth
+				<<   show_multipv(i + 1)
+				<< " score " << output::score(thread.pv[i].score)
+				<< " time " << time
+				<< " nodes " << nodes
+				<< " nps " << nodes * 1000 / std::max(time, 1LL)
+				<<  (time < 1000 ? "" : " hashfull " + std::to_string(trans::hashfull()))
+				<< " tbhits " << thread.get_tbhits()
+				<< " pv ";
+			variation(thread.pv[i]);
 			sync::cout << std::endl;
 		}
 	}
 
-	void bound_info(search::variation &pv, int depth, int multipv, int score, int bound)
+	void bound_info(sthread &thread, int depth, int multipv, int score, int bound)
 	{
 		assert(!score::mate(score));
-		chrono.split();
+		assert(!score::tb::mate(score));
+		assert(bound == UPPER || bound == LOWER);
+		auto time { thread.chrono.elapsed() };
+		auto nodes{ thread.get_nodes() };
 
 		sync::cout << "info"
 			<< " depth " << depth
-			<< " seldepth " << pv::get_seldepth(pv.move, pv.seldepth, depth)
-			<<   show_multipv(multipv)
+			<< " seldepth " << pv::get_seldepth(thread.pv[multipv].move, thread.pv[multipv].seldepth, depth)
+			<< show_multipv(multipv + 1)
 			<< " score cp " << score
-			<< (bound == UPPER ? " upper" : " lower") << "bound"
-			<< " time " << chrono.elapsed
-			<< " nodes " << nodes.cnt
-			<< " nps " << nodes.cnt * 1000 / std::max(chrono.elapsed, 1ULL)
+			<< (bound == UPPER ? " upperbound" : " lowerbound")
+			<< " time " << time
+			<< " nodes " << nodes
+			<< " nps " << nodes * 1000 / std::max(time, 1LL)
+			<< (time < 1000 ? "" : " hashfull " + std::to_string(trans::hashfull()))
 			<< std::endl;
 	}
 
-	void currmove(int depth, int multipv, uint32 move, int movenumber)
+	void currmove(sthread &thread, int depth, int multipv, uint32 move, int movenumber)
 	{
-		chrono.split();
-
-		if ((chrono.elapsed > 1000 && movenumber <= 3) || chrono.elapsed > 5000)
+		if (thread.chrono.elapsed() > 5000)
 		{
-			std::cout << "info depth " << depth
-				<<   show_multipv(multipv)
-				<< " currmove " << notation::algebraic(move)
+			std::cout << "info"
+				<< " depth " << depth
+				<< " seldepth " << pv::get_seldepth(thread.pv[multipv].move, thread.pv[multipv].seldepth, depth)
+				<<   show_multipv(multipv + 1)
+				<< " currmove " << move::algebraic(move)
 				<< " currmovenumber " << movenumber
-				<< " time " << chrono.elapsed
 				<< std::endl;
 		}
 	}
 
+	void tb_info(int tb_score)
+	{
+		sync::cout << "info string tablebase ";
+		switch (tb_score)
+		{
+		case -SCORE_TBMATE:       sync::cout << "loss"; break;
+		case  SCORE_BLESSED_LOSS: sync::cout << "blessed loss"; break;
+		case  SCORE_DRAW:         sync::cout << "draw"; break;
+		case  SCORE_CURSED_WIN:   sync::cout << "cursed win"; break;
+		case  SCORE_TBMATE:       sync::cout << "win"; break;
+		default: assert(false); break;
+		}
+		sync::cout << std::endl;
+	}
 }
 
-namespace expire
+namespace expiration
 {
 	// monitoring search expiration
 
-	void start_clock(uint64 movetime)
-	{
-		chrono.hits = 0;
-		chrono.max = movetime;
-		chrono.start();
-	}
-
-	bool abort(int depth, search::variation &pv, movepick_root &pick)
+	bool abort(chronometer &chrono, uint32 pv_move[], rootpick &pick, int depth, int score)
 	{
 		// checking the criteria for early search abortion
 
-		if (engine::infinite)
+		if (uci::infinite)
 			return false;
+		auto time{ chrono.elapsed() };
 
-		return (chrono.elapsed > chrono.max / 2)
-			|| (pv.score > MATE_SCORE && chrono.elapsed > chrono.max / 8)
-			|| (depth > 8 && pv.move[depth - 8] == NO_MOVE && chrono.elapsed > chrono.max / 16)
-			|| (pick.single_reply() && chrono.elapsed > chrono.max / 32)
-			|| (engine::limit.mate && score::mate_limit(pv.score));
+		return  time > chrono.max /  2
+			|| (time > chrono.max /  8 && score > SCORE_LONGEST_MATE)
+			|| (time > chrono.max /  8 && pick.tb_pos)
+			|| (time > chrono.max / 16 && depth > 8 && pv_move[depth - 8] == MOVE_NONE)
+			|| (time > chrono.max / 32 && pick.single_reply())
+			||  score::longest_mate(score);
 	}
 
-	bool stop_thread()
+	bool stop_thread(sthread &thread)
 	{
-		if (++chrono.hits < 256)
+		// keeping track of the elapsing time
+		// also increasing the frequency of checking the elapsed time while probing Syzygy-tablebases
+
+		if (++thread.chrono.hits * (1 + 3 * thread.use_syzygy) < 256)
 			return false;
-		chrono.hits = 0;
-		if (engine::infinite)
+		thread.chrono.hits = 0;
+		if (uci::infinite)
 			return false;
-		if (nodes.cnt >= engine::limit.nodes)
+		if (thread.get_nodes() >= uci::limit.nodes)
 			return true;
 
-		return chrono.split() >= chrono.max;
+		return thread.chrono.elapsed() >= thread.chrono.max;
 	}
 
-	void check()
+	void check(sthread &thread)
 	{
-		if (engine::stop || stop_thread())
+		// checking for immediate search termination
+
+		if (uci::stop || stop_thread(thread))
 		{
-			engine::stop = true;
-			throw 1;
+			uci::stop = true;
+			throw STOP_SEARCHING;
 		}
 	}
 }
 
 namespace update
 {
-	// updating during search
-
-	void kill_table(uint32 move, int curr_depth)
+	void add_history(sthread &thread, uint32 move, int weight, int turn)
 	{
-		assert(curr_depth < lim::depth);
+		// updating the history table
 
-		if (move == killer.list[curr_depth][0])
-			return;
-
-		killer.list[curr_depth][1] = killer.list[curr_depth][0];
-		killer.list[curr_depth][0] = move;
+		assert(turn == move::turn(move));
+		
+		auto &history{ thread.history[turn][move::piece(move)][move::sq2(move)] };
+		history += weight;
+		assert(history < sort::history_max);
 	}
 
-	void hist_table(const board &pos, uint32 move, int depth)
+	void history_stats(sthread &thread, uint32 move, uint32 quiet_move[], int quiet_count, int depth, int turn)
 	{
-		assert(pos.turn == move::turn(move));
+		// updating history table if a quiet move fails high
 
-		uint64 *entry{ &(history.list[pos.turn][move::piece(move)][move::sq2(move)]) };
-		*entry += depth * depth;
-
-		if (*entry > (1ULL << 63))
-			for (auto &i : history.list) for (auto &j : i) for (auto &h : j) h >>= 2;
+		add_history(thread, move, depth * depth, turn);
+		for (int i{}; i < quiet_count - 1; ++i)
+			add_history(thread, quiet_move[i], -depth, turn);
 	}
 
-	void heuristics(const board &pos, uint32 move, uint32 &counter, int depth, int curr_depth)
+	void killer_stats(uint32 killer[], uint32 move)
 	{
-		// updating history & killer & counter move if a quiet move failes high
+		// updating killer-moves if a quiet move fails high
 
-		if (move::is_quiet(move))
+		if (move != killer[0])
 		{
-			hist_table(pos, move, depth);
-			kill_table(move, curr_depth);
-			counter = move;
+			killer[1] = killer[0];
+			killer[0] = move;
 		}
 	}
 
-	void evolving_pv(int curr_depth, uint32 move)
+	void triangular_pv(uint32 move, uint32 tri_pv[][lim::depth], int curr_depth)
 	{
 		// saving the partial pv if a new best move has been found
 
-		evolving.pv[curr_depth - 1][0] = move;
-		for (auto d{ 0 }; evolving.pv[curr_depth][d] != NO_MOVE; ++d)
-			evolving.pv[curr_depth - 1][d + 1] = evolving.pv[curr_depth][d];
+		tri_pv[curr_depth - 1][0] = move;
+		for (int d{}; tri_pv[curr_depth][d] != MOVE_NONE; ++d)
+			tri_pv[curr_depth - 1][d + 1] = tri_pv[curr_depth][d];
 	}
 
-	void main_pv(uint32 move, uint32 pv_move[])
+	void main_pv(uint32 move, uint32 pv_move[], uint32 tri_pv[][lim::depth])
 	{
 		// updating the whole pv if a new best root move has been found
 
 		pv_move[0] = move;
-		for (auto d{ 0 }; evolving.pv[0][d] != NO_MOVE; ++d)
-			pv_move[d + 1] = evolving.pv[0][d];
+		for (int d{}; tri_pv[MAIN][d] != MOVE_NONE; ++d)
+			pv_move[d + 1] = tri_pv[MAIN][d];
 	}
 }
 
-namespace draw
+namespace abdada
 {
-	// detecting draws independent of the static evaluation
+	// simplified ABDADA
+	// all credits for the algorithm go to Tom Kerrigan:
+	// http://www.tckerrigan.com/Chess/Parallel_Search/Simplified_ABDADA
 
-	bool repetition(const board &pos, int curr_depth)
+	constexpr int depth_defer { 3 };
+	constexpr int depth_cutoff{ 4 };
+	constexpr int slots       { 4 };
+	constexpr uint32 size{ 1U << 15 };
+	constexpr uint32 mask{ size - 1 };
+	uint32 concurrent[size][slots]{};
+
+	uint32 to_key(uint32 move, uint64 &pos_key)
 	{
-		// marking every one-fold-repetition as a draw
+		// generating a move-hash-key
 
-		auto size{ engine::move_offset + curr_depth };
+		return static_cast<uint32>(pos_key) ^ (move * 1664525U + 1013904223U);
+	}
 
-		assert(hash[size] == pos.key);
-		assert(engine::move_offset + curr_depth <= pos.move_cnt);
+	bool defer_move(uint32 move_hash)
+	{
+		// checking if a move is already being searched by another thread
 
-		for (auto i{ 4 }; i <= pos.half_move_cnt && i <= size; i += 2)
+		auto &entry{ concurrent[move_hash & mask] };
+		return std::any_of(entry, entry + slots, [&](uint32 &move) { return move == move_hash; });
+	}
+
+	void add_move(uint32 move_hash)
+	{
+		// adding a move to the currently-searching-list
+
+		auto &all_slots{ concurrent[move_hash & mask] };
+		for (auto &entry : all_slots)
 		{
-			if (hash[size - i] == hash[size])
-				return true;
-		}
-		return false;
-	}
-
-	bool verify(const board &pos, int curr_depth)
-	{
-		// detecting draw-by-3-fold-repetition and draw-by-50-move-rule
-
-		hash[engine::move_offset + curr_depth] = pos.key;
-
-		if (pos.half_move_cnt >= 4
-			&& (repetition(pos, curr_depth) || pos.half_move_cnt >= 100))
-			return true;
-		else
-			return false;
-	}
-}
-
-void search::init_stack(search_stack *stack)
-{
-	for (auto d{ 0 }; d <= lim::depth; ++d)
-	{
-		stack[d] = { d, NO_MOVE, {NO_MOVE, NO_SCORE, 0}, {0ULL, 0}, false };
-	}
-}
-
-void search::init_multipv(std::vector<variation> &multipv)
-{
-	for (auto &pv : multipv)
-	{
-		for (auto &m : pv.move) m = NO_MOVE;
-		pv.mindepth = 0;
-		pv.maxdepth = 0;
-		pv.seldepth = 0;
-		pv.score = MIN_SCORE;
-	}
-}
-
-uint32 search::id_frame(board &pos, uint64 &movetime, uint32 &ponder)
-{
-	// iterative deepening framework
-
-	assert(engine::limit.depth >= 1);
-	assert(engine::limit.depth <= lim::depth);
-	assert(engine::multipv >= 1);
-
-	// starting the clock & getting search parameters ready
-
-	expire::start_clock(movetime);
-	search_stack stack[lim::depth + 1];
-	std::vector<variation> pv(lim::multipv);
-
-	int score{ NO_SCORE };
-	uint32 best_move{ };
-
-	// initialising search & generating and sorting moves
-
-	init_stack(stack);
-	init_multipv(pv);
-	init::search();
-
-	movepick_root pick(pos);
-
-	// iterative deepening & looping through multi-principal variations
-
-	for (auto depth{ 1 }; depth <= engine::limit.depth && !engine::stop; ++depth)
-	{
-		for (auto idx{ 0 }; idx < engine::multipv && idx <= pick.list.cnt.moves && !engine::stop; ++idx)
-		{
-			// rearranging root moves & storing the PV from the last iteration
-
-			pick.rearrange_moves(pv[idx].move[0], idx > 0 ? pv[idx - 1].move[0] : NO_MOVE);
-
-			// starting alphabeta search through an aspiration window
-
-			try { score = aspiration(pos, stack, pick, pv[idx], depth, idx + 1); }
-			catch (int &exception)
+			if (entry == 0U)
 			{
-				if (exception == 1) pos.revert(pick.list.pos);
-				else assert(false);
+				entry = move_hash;
+				return;
 			}
-
-			chrono.split();
-			assert(score == MIN_SCORE || nodes.cnt != 0);
-			//assert(pv[idx].score < MATE_SCORE || score >= pv[idx].score);
-
-			// defining depth derivates
-
-			pv[idx].mindepth = depth - engine::stop;
-			pv[idx].seldepth = pv::get_seldepth(pv[idx].move, pv[idx].seldepth, depth);
-
-			// sanity-checking the PV only after a successfull search
-
-			if (score != MIN_SCORE)
-			{
-				pv[idx].score = score;
-				pv::prune(pv[idx], pos);
-				pv::store(pv[idx], pos);
-
-				//assert(!score::mate(pv[idx].score) || abs(pv[idx].score) == MAX_SCORE - pv[idx].maxdepth);
-			}
+			if (entry == move_hash)
+				return;
 		}
-
-		// outputting search information & selecting best moves
-		
-		output::info(pv);
-		best_move = pv[0].move[0];
-		ponder    = pv[0].move[1];
-
-		if (expire::abort(depth, pv[0], pick))
-			break;
+		all_slots[0] = move_hash;
 	}
-	nodes.total += nodes.cnt;
-	searchtime += chrono.elapsed;
-	return best_move;
+
+	void remove_move(uint32 move_hash)
+	{
+		// removing a move from the currently-searching-list
+
+		auto &all_slots{ concurrent[move_hash & mask] };
+		for (auto &entry : all_slots)
+		{
+			if (entry == move_hash)
+				entry = 0;
+		}
+	}
 }
 
-int search::aspiration(board &pos, search_stack *stack, movepick_root &pick, variation &pv, int depth, int multipv)
+void search::reset()
 {
-	// aspiration window, currently deactivated
+	// resetting the tables for concurrent move-searching (ABDADA)
 
-	int alpha{ MIN_SCORE }, beta{ MAX_SCORE };
-	int alpha_margin{ 10 }, beta_margin{ 10 };
-	int score{ NO_SCORE };
-	int bound{ EXACT };
-
-	while (true)
-	{
-		if (depth >= /*4*/ lim::depth)
-		{
-			assert(pv.score != NO_SCORE);
-			alpha = std::max(pv.score - alpha_margin, (int)MIN_SCORE);
-			beta  = std::min(pv.score +  beta_margin, (int)MAX_SCORE);
-		}
-		assert(MIN_SCORE <= alpha && alpha < beta && beta <= MAX_SCORE);
-
-		score = root_alphabeta(pos, stack, pick, pv, depth, alpha, beta, multipv);
-		assert(score != NO_SCORE);
-
-		if (score <= alpha)
-		{
-			bound = UPPER;
-			alpha_margin *= 2;
-		}
-		else if (score >= beta)
-		{
-			bound = LOWER;
-			beta_margin *= 2;
-		}
-
-		if (!score::mate(score) && (score <= alpha || score >= beta))
-			output::bound_info(pv, depth, multipv, score, bound);
-		else break;
-	}
-	return score;
+	for (auto &slot : abdada::concurrent) for (auto &hash : slot) hash = 0U;
 }
 
-int search::root_alphabeta(board &pos, search_stack *stack, movepick_root &pick, variation &pv, int depth, int alpha, int beta, int multipv)
+namespace search
 {
-	// starting the alphabeta search with the root nodes
-
-	assert(depth >= 1 && depth <= lim::depth);
-	assert(MIN_SCORE <= alpha && alpha < beta && beta <= MAX_SCORE);
-
-	int score{ NO_SCORE };
-
-	// looping through the movelist
-
-	for (auto i{ 0 }, moves{ 0 }; i < pick.list.cnt.moves; ++i)
+	int qsearch(sthread &thread, board &pos, sthread::sstack *stack, int depth, int alpha, int beta)
 	{
-		if (pick.sort.root[i].skip)
-			continue;
-		stack->move = pick.sort.root[i].move;
+		// quiescence search at the leaf nodes
 
-		assert_exp(pos.pseudolegal(stack->move));
-		assert(pick.list.in_list(stack->move));
+		assert(-SCORE_MATE <= alpha && alpha < beta && beta <= SCORE_MATE);
+		assert(depth <= 0);
+		assert_exp(depth != 0 || !pos.check());
 
-		output::currmove(depth, multipv, stack->move, moves + 1);
-		pick.sort.root[i].nodes -= nodes.cnt;
+		// detecting draws
 
-		pos.new_move(stack->move);
-		nodes.cnt += 1;
-		assert_exp(position::legal(pos));
+		auto offset{ uci::move_offset + stack->depth };
+		thread.rep_hash[offset] = pos.key;
+		if (pos.draw(thread.rep_hash, offset))
+			return uci::contempt[pos.xturn];
 
-		// check extension & PVS
+		expiration::check(thread);
 
-		int ext{ pick.sort.root[i].check };
-		if (moves > 0)
+		// transposition table lookup
+
+		trans::entry tt{};
+		if (depth == 0 && trans::probe(pos.key, tt, depth, stack->depth))
 		{
-			score = -alphabeta(pos, stack + 1, depth - 1 + ext, -alpha - 1, -alpha);
-			if (score > alpha)
-				score = -alphabeta(pos, stack + 1, depth - 1 + ext, -beta, -alpha);
+			if (tt.bound == EXACT
+			|| (tt.bound == LOWER && tt.score >= beta)
+			|| (tt.bound == UPPER && tt.score <= alpha))
+				return tt.score;
 		}
-		else
-			score = -alphabeta(pos, stack + 1, depth - 1 + ext, -beta, -alpha);
 
-		pick.sort.root[i].nodes += nodes.cnt;
-		pos.revert(pick.list.pos);
-		assert(score > MIN_SCORE && score < MAX_SCORE);
-		assert(score != NO_SCORE);
-		//assert(score >= alpha || (score <= alpha && alpha < MATE_SCORE));
+		// standing pat & considering checks
 
-		if (score > alpha)
+		auto stand_pat{ eval::static_eval(pos, thread.pawnhash) };
+		auto best_score{ stand_pat };
+		auto in_check{ depth == -1 && pos.check() };
+
+		if (!in_check && stand_pat > alpha)
 		{
-			if (score >= beta)
-				return score;
-
-			alpha = score;
-			update::main_pv(stack->move, pv.move);
-			pick.sort.root[i].nodes += nodes.cnt;
+			if (stand_pat >= beta)
+				return stand_pat;
+			alpha = stand_pat;
 		}
-		moves += 1;
-	}
-	return alpha;
-}
 
-int search::alphabeta(board &pos, search_stack *stack, int depth, int alpha, int beta)
-{
-	// main alphabeta search
+		// generating and sorting moves while looping through them
 
-	assert(MIN_SCORE <= alpha && alpha < beta && beta <= MAX_SCORE);
-	assert(depth <= lim::depth);
-
-	// detecting draws & dropping into quiescence search at leaf nodes
-
-	if (draw::verify(pos, stack->depth))
-		return engine::contempt[pos.xturn];
-		
-	if (depth <= 0 || stack->depth >= lim::depth)
-		return qsearch(pos, stack, 0, alpha, beta);
-		
-	expire::check();
-
-	// mate distance pruning
-
-	auto a_bound{ alpha < MIN_SCORE + stack->depth ? MIN_SCORE + stack->depth : alpha };
-	auto b_bound{ beta  > MAX_SCORE - stack->depth ? MAX_SCORE - stack->depth : beta  };
-	if (b_bound <= a_bound)
-		return a_bound;
-
-	// transposition table lookup
-
-	bool pv_node{ beta != alpha + 1};
-	if (trans::probe(pos, stack->tt.move, stack->tt.score, stack->tt.bound, depth, stack->depth))
-	{
-		if (!pv_node)
-			stack->tt.move = NO_MOVE;
-
-		if (stack->tt.score <= alpha || stack->tt.score >= beta)
+		movepick pick(pos, in_check, depth);
+		for (uint32 move{ pick.next() }; move != MOVE_NONE; move = pick.next())
 		{
-			if (pv_node)
-				stack->tt.move = NO_MOVE;
+			assert(depth >= -1 || !move::quiet(move));
+			assert_exp(pos.pseudolegal(move));
+			auto skip_pruning{ in_check || move::quiet(move) };
 
-			else if (stack->tt.bound == EXACT
-				||  (stack->tt.bound == LOWER && stack->tt.score >= beta)
-				||  (stack->tt.bound == UPPER && stack->tt.score <= alpha))
-				return stack->tt.score;
-		}
-	}
+			// depth limit pruning
 
-	// initialising pruning & evaluating the current position
+			if (!skip_pruning
+				&& depth <= -6
+				&& !pos.recapture(move))
+				continue;
 
-	auto in_check{ pos.check() };
-	auto crucial_node{ pv_node || in_check };
-	auto skip_pruning{ crucial_node || stack->no_pruning };
-	auto score{ crucial_node ? NO_SCORE : eval::static_eval(pos) };
+			// delta pruning
 
-	if (score::refineable(score, stack->tt.score, stack->tt.bound))
-		score = stack->tt.score;
+			if (!skip_pruning
+				&& !pos.lone_king()
+				&& !move::promo(move)
+				&& stand_pat + attack::value[move::victim(move)] + 100 < alpha)
+				continue;
 
-	// static null move pruning
+			// SEE pruning
 
-	if (depth <= 3
-		&& !score::mate(beta)
-		&& !skip_pruning
-		&& score - depth * 50 >= beta)
-	{
-		return beta;
-	}
+			if (!skip_pruning
+				&& !move::promo(move)
+				&& attack::value[move::piece(move)] > attack::value[move::victim(move)]
+				&& attack::see(pos, move) < 0)
+				continue;
 
-	// razoring
+			pos.new_move(move);
+			assert_exp(pos.legal());
+			thread.nodes += 1;
+			thread.count.qs += 1;
 
-	if (depth <= 3
-		&& !skip_pruning
-		&& score + depth * 50 + 100 <= alpha)
-	{
-		auto raz_alpha{ alpha - depth * 50 - 100 };
-		auto new_score{ qsearch(pos, stack, 0, raz_alpha, raz_alpha + 1) };
-		if (new_score <= raz_alpha)
-			return alpha;
-	}
-
-	// null move pruning
-
-	if (depth >= 2
-		&& !skip_pruning
-		&& !pos.lone_king()
-		&& score >= beta)
-	{
-		auto R{ 3 + std::min(3, (score - beta) / 128) };
-
-		null::make_move(pos, stack);
-		nodes.cnt += 1;
-		auto null_score{ -alphabeta(pos, stack + 1, depth - 1 - R, -beta, 1 - beta) };
-		null::revert_move(pos, stack);
-
-		if (null_score >= beta)
-			return beta;
-	}
-
-	// internal iterative deepening
-
-	if (pv_node
-		&& stack->tt.move == NO_MOVE
-		&& !stack->no_pruning
-		&& depth >= 3)
-	{
-		stack->no_pruning = true;
-		alphabeta(pos, stack, depth - 2, alpha, beta);
-		stack->no_pruning = false;
-
-		trans::probe(pos, stack->tt.move, stack->tt.score, stack->tt.bound, depth, stack->depth);
-	}
-
-	// initialising move loop
-
-	auto is_futile{ !crucial_node && depth <= 6 };
-	auto fut_score{ score + 50 + 100 * depth };
-	auto best_score{ -MAX_SCORE };
-
-	auto &counter{ counter_move[move::piece((stack - 1)->move)][move::sq2((stack - 1)->move)] };
-	auto prev_alpha{ alpha };
-
-	// generating and sorting moves while looping through them
-
-	movepick pick(pos, stack->tt.move, counter, history, killer, stack->depth);
-	for (stack->move = pick.next(); stack->move; stack->move = pick.next())
-	{
-		// doing the move
-
-		assert_exp(pos.pseudolegal(stack->move));
-		pos.new_move(stack->move);
-		if (!position::legal(pos))
-		{
+			auto score{ -qsearch(thread, pos, stack + 1, depth - 1, -beta, -alpha) };
 			pos.revert(pick.list.pos);
-			pick.attempts -= 1;
-			continue;
-		}
-		nodes.cnt += 1;
+			assert(score != SCORE_NONE);
 
-		// initialising move
-
-		auto gives_check{ pos.check() };
-		auto is_dangerous{ gives_check || !move::is_quiet(stack->move)
-			|| move::is_pawn_advance(stack->move) || move::is_castling(stack->move)
-			|| move::is_killer(stack->move, counter, stack->depth) };
-
-		// futility pruning
-
-		if (is_futile && !is_dangerous && pick.attempts > 0 && fut_score <= alpha && !score::mate(alpha))
-		{
-			pos.revert(pick.list.pos); continue;
-		}
-
-		// late move pruning
-
-		if (!skip_pruning && !is_dangerous && depth <= 3 && pick.attempts >= depth * 4)
-		{
-			pos.revert(pick.list.pos); continue;
-		}
-
-		// extensions & PVS
-
-		auto ext{ move::extend(stack->move, gives_check, pv_node, depth, pick.list.pos) };
-
-		if (pv_node && pick.attempts > 0)
-		{
-			score = -alphabeta(pos, stack + 1, depth - 1 + ext, -alpha - 1, -alpha);
-			if (score > alpha)
-				score = -alphabeta(pos, stack + 1, depth - 1 + ext, -beta, -alpha);
-		}
-		else
-			score = -alphabeta(pos, stack + 1, depth - 1 + ext, -beta, -alpha);
-
-		pos.revert(pick.list.pos);
-		assert(score != NO_SCORE);
-
-		// checking for a new best move
-
-		if (score > best_score)
-		{
-			best_score = score;
-			if (score > alpha)
+			if (score > best_score)
 			{
-				// checking for a beta cutoff
-
-				if (score >= beta)
+				best_score = score;
+				if (score > alpha)
 				{
-					trans::store(pos, NO_MOVE, score, LOWER, depth, stack->depth);
-					update::heuristics(pos, stack->move, counter, depth, stack->depth);
+					alpha = score;
+					if (score >= beta)
+						return score;
+				}
+			}
+		}
 
-					nodes.fail_high += 1;
-					nodes.fail_high_1st += (pick.attempts == 0);
+		// detecting checkmate
+
+		if (in_check && pick.hits == 0)
+			return stack->depth - SCORE_MATE;
+
+		assert(-SCORE_MATE < best_score && best_score < SCORE_MATE);
+		return best_score;
+	}
+
+	int alphabeta(sthread &thread, board &pos, sthread::sstack *stack, int depth, int alpha, int beta)
+	{
+		// main alpha-beta search
+		// first detecting draws or dropping into quiescence search at leaf nodes
+
+		assert(-SCORE_MATE <= alpha && alpha < beta && beta <= SCORE_MATE);
+		assert(depth <= lim::depth);
+
+		auto offset{ uci::move_offset + stack->depth };
+		thread.rep_hash[offset] = pos.key;
+
+		if (pos.draw(thread.rep_hash, offset))
+			return uci::contempt[pos.xturn];
+
+		if (depth <= 0 || stack->depth >= lim::depth)
+			return qsearch(thread, pos, stack, 0, alpha, beta);
+
+		expiration::check(thread);
+
+		// mate distance pruning
+
+		auto a_bound{ alpha < -SCORE_MATE + stack->depth ? -SCORE_MATE + stack->depth : alpha };
+		auto b_bound{  beta >  SCORE_MATE - stack->depth ?  SCORE_MATE - stack->depth :  beta };
+		if  (b_bound <= a_bound)
+			return a_bound;
+
+		// probing transposition table
+
+		bool pv_node{ beta != alpha + 1 };
+		auto key{ pos.key ^ static_cast<uint64>(stack->skip_move) };
+		trans::entry tt{};
+		if (trans::probe(key, tt, depth, stack->depth))
+		{
+			if (!pv_node)
+				tt.move = MOVE_NONE;
+
+			if (tt.score <= alpha || tt.score >= beta)
+			{
+				if (pv_node)
+					tt.move = MOVE_NONE;
+
+				else if (tt.bound == EXACT
+					||  (tt.bound == LOWER && tt.score >= beta)
+					||  (tt.bound == UPPER && tt.score <= alpha))
+					return tt.score;
+			}
+		}
+
+		// probing syzygy tablebases
+
+		if (thread.use_syzygy)
+		{
+			auto piece_cnt{ bit::popcnt(pos.side[BOTH]) };
+			if (piece_cnt <= uci::syzygy.pieces
+				&& (piece_cnt < std::min(5, uci::syzygy.pieces) || depth >= uci::syzygy.depth)
+				&& pos.half_count == 0)
+			{
+				int success{};
+				int score{ SCORE_NONE };
+				int wdl{ syzygy::probe_wdl(pos, success) };
+				if (success)
+				{
+					if (wdl < -1 || (wdl < 0 && !uci::syzygy.rule50))
+						score = -SCORE_TBMATE + stack->depth;
+					else if (wdl > 1 || (wdl > 0 && !uci::syzygy.rule50))
+						score =  SCORE_TBMATE - stack->depth;
+					else
+						score = uci::contempt[pos.xturn] + wdl;
+
+					thread.count.tbhit += 1;
 					return score;
 				}
-				alpha = score;
-				update::evolving_pv(stack->depth, stack->move);
 			}
 		}
-	}
 
-	// storing results & detecting checkmate/stalemate
+		// initializing pruning & evaluating the current position
 
-	if (alpha == prev_alpha)
-	{
-		if (pick.attempts == -1)
-			return in_check ? stack->depth - MAX_SCORE : engine::contempt[pos.xturn];
+		auto in_check{ pos.check() };
+		auto crucial_node{ pv_node || in_check };
+		auto skip_pruning{ crucial_node || stack->no_pruning };
+		auto score{ crucial_node ? SCORE_NONE : eval::static_eval(pos, thread.pawnhash) };
 
-		trans::store(pos, NO_MOVE, best_score, UPPER, depth, stack->depth);
-	}
-	else
-	{
-		assert(alpha > prev_alpha);
-		trans::store(pos, evolving.pv[stack->depth - 1][0], best_score, EXACT, depth, stack->depth);
-	}
-	
-	assert(best_score > MIN_SCORE && best_score < MAX_SCORE);
-	return best_score;
-}
+		if (score::refinable(score, tt.score, tt.bound))
+			score = tt.score;
 
-int search::qsearch(board &pos, search_stack *stack, int depth, int alpha, int beta)
-{
-	assert(MIN_SCORE <= alpha && alpha < beta && beta <= MAX_SCORE);
-	assert(depth <= 0);
-	assert_exp(depth != 0 || !pos.check());
+		// static null move pruning
 
-	// detecting draws
+		if (depth <= 3 && !score::mate(beta) && !skip_pruning && score - depth * 50 >= beta)
+			return beta;
 
-	if (draw::verify(pos, stack->depth))
-		return engine::contempt[pos.xturn];
-		
-	expire::check();
-	
-	// transposition table lookup
+		// razoring
 
-	if (depth == 0 && trans::probe(pos, stack->tt.move, stack->tt.score, stack->tt.bound, depth, stack->depth))
-	{
-		if (stack->tt.bound == EXACT
-			|| (stack->tt.bound == LOWER && stack->tt.score >= beta)
-			|| (stack->tt.bound == UPPER && stack->tt.score <= alpha))
-			return stack->tt.score;
-	}
-
-	// standing pat & considering checks
-
-	auto stand_pat{ eval::static_eval(pos) };
-	auto best_score{ stand_pat };
-	auto in_check{ depth == -1 && pos.check() };
-
-	if (!in_check && stand_pat > alpha)
-	{
-		if (stand_pat >= beta)
-			return stand_pat;
-		alpha = stand_pat;
-	}
-
-	// generating and sorting moves while looping through them
-
-	movepick pick(pos, in_check, depth);
-	for (stack->move = pick.next(); stack->move; stack->move = pick.next())
-	{
-		assert(depth >= -1 || !move::is_quiet(stack->move));
-		assert_exp(pos.pseudolegal(stack->move));
-		auto skip_pruning{ in_check || move::is_quiet(stack->move) };
-
-		// depth limit pruning
-
-		if (!skip_pruning
-			&& depth <= -6
-			&& !pos.recapture(stack->move))
-			continue;
-
-		// delta pruning
-
-		if (!skip_pruning
-			&& !pos.lone_king()
-			&& !move::is_promo(stack->move)
-			&& stand_pat + see::value[move::victim(stack->move)] + 100 < alpha)
-			continue;
-
-		// SEE pruning
-
-		if (!skip_pruning
-			&& !move::is_promo(stack->move)
-			&& see::value[move::piece(stack->move)] > see::value[move::victim(stack->move)]
-			&& see::eval(pos, stack->move) < 0)
-			continue;
-
-		pos.new_move(stack->move);
-		assert_exp(position::legal(pos));
-		nodes.cnt += 1;
-		nodes.qs += 1;
-
-		auto score{ -qsearch(pos, stack + 1, depth - 1, -beta, -alpha) };
-		pos.revert(pick.list.pos);
-		assert(score != NO_SCORE);
-
-		if (score > best_score)
+		if (depth <= 3 && !skip_pruning && score + depth * 50 + 100 <= alpha)
 		{
-			best_score = score;
+			auto raz_alpha{ alpha - depth * 50 - 100 };
+			auto new_score{ qsearch(thread, pos, stack, 0, raz_alpha, raz_alpha + 1) };
+			if (new_score <= raz_alpha)
+				return alpha;
+		}
+
+		// null move pruning
+
+		if (depth >= 2 && !skip_pruning && !stack->skip_move && !pos.lone_king() && score >= beta)
+		{
+			auto R{ 3 + std::min(3, (score - beta) / 128) };
+			null::make_move(pos, stack);
+			thread.nodes += 1;
+			auto null_score{ -alphabeta(thread, pos, stack + 1, depth - 1 - R, -beta, 1 - beta) };
+			null::revert_move(pos, stack);
+
+			if (null_score >= beta)
+				return beta;
+		}
+
+		// forcing the previous PV-move to the top of the movelist
+		// the move will be checked for pseudo-legality by the move-generator afterwards
+
+		if (thread.tri_pv[PREVIOUS][stack->depth])
+		{
+			tt = { thread.tri_pv[PREVIOUS][stack->depth], SCORE_NONE, 0, 0 };
+			thread.tri_pv[PREVIOUS][stack->depth] = MOVE_NONE;
+		}
+
+		// internal iterative deepening
+
+		else if (pv_node && tt.move == MOVE_NONE && !stack->no_pruning && depth >= 3)
+		{
+			stack->no_pruning = true;
+			alphabeta(thread, pos, stack, depth - 2, alpha, beta);
+			stack->no_pruning = false;
+			trans::probe(key, tt, depth, stack->depth);
+		}
+
+		// initializing move loop
+		
+		auto &counter{ thread.counter_move[move::piece((stack - 1)->move)][move::sq2((stack - 1)->move)] };
+		auto futile{ !crucial_node && depth <= 6 };
+		auto fut_score{ score + 50 + 100 * depth };
+		auto old_alpha{ alpha };
+		auto best_score{ -SCORE_MATE };
+		uint32 best_move{ MOVE_NONE };
+		
+		uint32 defer_move[lim::moves]{};
+		uint32 quiet_move[lim::moves]{};
+		int defer_count{};
+		int quiet_count{};
+		
+		// generating and sorting moves while looping through them
+
+		movepick pick(pos, tt.move, counter, stack->killer, thread.history, defer_move);
+		for (uint32 move{ pick.next() }; move != MOVE_NONE; move = pick.next())
+		{
+			assert(pick.hits >= 1 && pick.hits <= lim::moves);
+			assert(pick.hits == 1 || move != tt.move || uci::thread_count > 1);
+
+			// cutoff check (ABDADA)
+
+			if (defer_count > 0 && !pv_node && depth >= abdada::depth_cutoff && pick.can_defer())
+			{
+				assert(uci::thread_count > 1);
+				if (trans::probe(key, tt, depth, stack->depth) && (tt.bound == LOWER && tt.score >= beta))
+					return tt.score;
+			}
+
+			// initializing
+
+			if (move == stack->skip_move)
+			{
+				pick.hits -= 1;
+				continue;
+			}
+
+			auto gives_check{ pos.gives_check(move) };
+			auto quiet{ move::quiet(move) };
+			auto dangerous{ pick.hits == 1
+				|| gives_check
+				|| !quiet
+				|| move::pawn_advance(move)
+				|| move::castling(move)
+				|| move::killer(move, counter, stack->killer) };
+
+			assert_exp(pos.pseudolegal(move));
+			thread.nodes += 1;
+			if (quiet) quiet_move[quiet_count++] = move;
+
+			// futility pruning
+
+			if (futile && !dangerous && fut_score <= alpha && !score::mate(alpha) && !score::tb::mate(alpha))
+				continue;
+
+			// late move pruning
+
+			if (!skip_pruning && !dangerous && depth <= 3 && pick.hits >= depth * 4)
+				continue;
+
+			// SEE pruning
+
+			if (!skip_pruning && !dangerous && depth <= 4 && attack::see(pos, move) < 0)
+				continue;
+
+			// deferring moves that are searched by other threads (ABDADA)
+
+			auto move_hash{ abdada::to_key(move, pos.key) };
+			if (pick.hits > 1 && pick.can_defer() && depth >= abdada::depth_defer && abdada::defer_move(move_hash))
+			{
+				defer_move[defer_count++] = move;
+				thread.nodes -= 1;
+				continue;
+			}
+
+			// singular extension
+
+			int extension{};
+			if (move == tt.move && depth >= 6 && tt.bound == LOWER && tt.score != SCORE_NONE && tt.depth >= depth - 4)
+			{
+				assert(pick.hits == 1 || uci::thread_count > 1);
+
+				auto alpha_bound{ std::max(tt.score - 2 * depth, -SCORE_MATE) };
+				stack->skip_move = move;
+				score = -alphabeta(thread, pos, stack, depth - 4, alpha_bound, alpha_bound + 1);
+				assert(stack->skip_move == move);
+				stack->skip_move = MOVE_NONE;
+
+				if (score <= alpha_bound)
+					extension = 1;
+			}
+
+			// other extensions
+
+			if (!extension && move::extend(move, gives_check, pv_node, depth, pick.list.pos))
+				 extension = 1;
+
+			// doing the move and checking if it is legal
+
+			pos.new_move(move);
+			assert_exp(gives_check == pos.check());
+			if (!pos.legal())
+			{
+				pick.revert(pos); continue;
+			}
+			stack->move = move;
+
+			// late move reduction
+
+			int reduction{};
+			if (!extension && depth >= 3 && pick.hits >= 4 && !in_check && !gives_check && quiet && !move::pawn_advance(move))
+			{
+				assert(pos.xturn == move::turn(move));
+				auto history{ thread.history[pos.xturn][move::piece(move)][move::sq2(move)] };
+
+				reduction = 1 + (pick.hits - 4) / 9 + (depth - 3) / 4 - pv_node;
+				reduction = value::minmax(reduction + history / -5000, 0, 6);
+			}
+			
+			// late move reduction search
+
+			auto new_depth{ depth - 1 + extension };
+			auto new_alpha{ pv_node && pick.hits > 1 ? -alpha - 1 : -beta };
+			if (reduction)
+				score = -alphabeta(thread, pos, stack + 1, new_depth - reduction, -alpha - 1, -alpha);
+
+			// principal variation search (with ABDADA and LMR-research)
+
+			if (!reduction || (reduction && score > alpha))
+			{
+				if (pick.hits > 1 && pick.can_defer() && depth > abdada::depth_defer)
+				{
+					abdada::add_move(move_hash);
+					score = -alphabeta(thread, pos, stack + 1, new_depth, new_alpha, -alpha);
+					abdada::remove_move(move_hash);
+				}
+				else score = -alphabeta(thread, pos, stack + 1, new_depth, new_alpha, -alpha);
+
+				if (pick.hits > 1 && pv_node && score > alpha)
+					score = -alphabeta(thread, pos, stack + 1, new_depth, -beta, -alpha);
+			}
+
+			pos.revert(pick.list.pos);
+			assert(score != SCORE_NONE);
+
+			// checking for a new best move
+
+			if (score > best_score)
+			{
+				best_score = score;
+				if (score > alpha)
+				{
+					// checking for a beta cutoff
+					
+					best_move  = move;
+					if (score >= beta)
+					{
+						thread.count.fail_high   += 1;
+						thread.count.fail_high_1 += (pick.hits == 1);
+						if (quiet)
+						{
+							update::history_stats(thread, move, quiet_move, quiet_count, depth, pos.turn);
+							update::killer_stats(stack->killer, move);
+							counter = move;
+						}
+						break;
+					}
+					alpha = score;
+					update::triangular_pv(move, thread.tri_pv, stack->depth);
+				}
+			}
+		}
+
+		// detecting checkmate & stalemate
+
+		if (pick.hits == 0)
+		{
+			assert(alpha == old_alpha);
+			return stack->skip_move ? alpha : (in_check ? stack->depth - SCORE_MATE : uci::contempt[pos.xturn]);
+		}
+		
+		// storing the results in the transposition table
+
+		if (!stack->skip_move)
+		{
+			trans::store(key, best_move, best_score,
+				best_score <= old_alpha ? UPPER : (best_score >= beta ? LOWER : EXACT), depth, stack->depth);
+		}
+
+		assert(-SCORE_MATE < best_score && best_score < SCORE_MATE);
+		return best_score;
+	}
+
+	int alphabeta_root(sthread &thread, board &pos, rootpick &pick, int depth, int alpha, int beta, int multipv)
+	{
+		// starting the alpha-beta search with the root nodes
+
+		assert(1 <= depth && depth <= lim::depth);
+		assert(-SCORE_MATE <= alpha && alpha < beta && beta <= SCORE_MATE);
+
+		int score{ SCORE_NONE };
+		bool wrong_pv{};
+		auto stack{ thread.stack };
+
+		// looping through the movelist
+
+		for (int i{}, move_count{}; i < pick.list.moves; ++i)
+		{
+			auto &node{ pick.sort.root[i] };
+			if (node.skip) continue;
+			move_count += 1;
+
+			assert_exp(pos.pseudolegal(node.move));
+			assert(pick.list.find(node.move));
+
+			if (thread.main)
+				output::currmove(thread, depth, multipv, node.move, move_count);
+			node.nodes -= thread.nodes;
+
+			pos.new_move(node.move);
+			thread.nodes += 1;
+			assert_exp(pos.legal());
+			stack->move = node.move;
+
+			// check extension & PVS
+
+			int extension{ node.check };
+			auto new_depth{ depth - 1 + extension };
+			auto new_alpha{ move_count > 1 ? -alpha - 1 : -beta };
+
+			score = -alphabeta(thread, pos, stack + 1, new_depth, new_alpha, -alpha);
+			if (move_count > 1 && score > alpha)
+				score = -alphabeta(thread, pos, stack + 1, new_depth, -beta, -alpha);
+
+			node.nodes += thread.nodes;
+			pos.revert(pick.list.pos);
+
+			assert(node.nodes >= 0);
+			assert(score > -SCORE_MATE && score < SCORE_MATE);
+			assert(score != SCORE_NONE);
+
+			// refining the search scores with dtz scores if the root node is a tb-position
+
+			if (pick.tb_pos)
+			{
+				if (score::draw(score)) score = SCORE_DRAW;
+				auto dtz_score{ static_cast<int>(node.weight) };
+
+				wrong_pv = score::tb::refinable(score, dtz_score);
+				if (wrong_pv || (dtz_score == SCORE_TB && !score::mate(score)))
+					score = dtz_score;
+			}
+
 			if (score > alpha)
 			{
-				alpha = score;
 				if (score >= beta)
 					return score;
+
+				alpha = score;
+				update::main_pv(node.move, thread.pv[multipv].move, thread.tri_pv);
+				node.nodes += thread.nodes;
+
+				if (pick.tb_pos)
+					thread.pv[multipv].wrong = wrong_pv;
+			}
+		}
+		return alpha;
+	}
+
+	int aspiration_window(sthread &thread, board &pos, rootpick &pick, int depth, int multipv)
+	{
+		// entering the alpha-beta-search through an aspiration window
+		// the window widens dynamically depending on the bound the search returns
+
+		int alpha{ -SCORE_MATE }, beta{ SCORE_MATE };
+		int bound{ EXACT };
+		int score{ SCORE_NONE };
+		int score_old{ thread.pv[multipv].score };
+		int lower_margin{ 35 }, upper_margin{ 35 };
+		
+		assert(depth == 1 || score_old != SCORE_NONE);
+
+		while (true)
+		{
+			if (depth >= 4)
+			{
+				alpha = std::max(score_old - lower_margin, -(int)SCORE_MATE);
+				beta  = std::min(score_old + upper_margin,  (int)SCORE_MATE);
+				assert(alpha < beta);
+			}
+
+			score = alphabeta_root(thread, pos, pick, depth, alpha, beta, multipv);
+			assert(score != SCORE_NONE);
+
+			if (score <= alpha)
+			{
+				bound = UPPER;
+				lower_margin *= 4;
+			}
+			else if (score >= beta)
+			{
+				bound = LOWER;
+				upper_margin *= 4;
+			}
+
+			if ((alpha < score && score < beta) || score::mate(score) || score::tb::mate(score))
+				break;
+
+			if (thread.main)
+				output::bound_info(thread, depth, multipv, score, bound);
+		}
+		return score;
+	}
+
+	void iterative_deepening(sthread &thread)
+	{
+		// iterative deepening framework, the base of the search hierarchy
+
+		int score{ SCORE_NONE };
+		int tb_score{ SCORE_NONE };
+
+		// generating root node moves
+
+		board pos{ thread.pos };
+		rootpick pick(pos);
+
+		// probing syzygy tablebases
+
+		thread.use_syzygy = { syzygy::tablebases > 0 };
+		if (thread.use_syzygy && bit::popcnt(pos.side[BOTH]) <= uci::syzygy.pieces)
+		{
+			pick.tb_pos = syzygy::probe_dtz_root(pos, pick, uci::quiet_hash, tb_score);
+
+			if (pick.tb_pos)
+				thread.use_syzygy = false;
+			else
+			{
+				// using WDL-tables as a fall-back if DTZ-tables are missing
+				// allowing probing during the search only if the position is winning
+
+				pick.tb_pos = syzygy::probe_wdl_root(pos, pick, tb_score);
+				if (tb_score <= SCORE_DRAW)
+					thread.use_syzygy = false;
+			}
+		}
+		thread.count.tbhit += pick.tb_pos;
+
+		// iterative deepening & looping through multi-principal variations
+
+		for (int depth{ 1 }; depth <= uci::limit.depth && !uci::stop; ++depth)
+		{
+			for (int i{}; i < uci::multipv && i < pick.list.moves && !uci::stop; ++i)
+			{
+				// rearranging root moves & synchronizing the PV from the last iteration
+
+				pick.rearrange_moves(thread.pv[i].move[0], i > 0
+					? thread.pv[i - 1].move[0]
+					: uint32(MOVE_NONE));
+				pv::synchronize(thread, i);
+
+				// starting alpha-beta search through an aspiration window
+
+				try { score = aspiration_window(thread, pos, pick, depth, i); }
+				catch (exception_type &ex)
+				{
+					if (ex == STOP_SEARCHING) pos.revert(pick.list.pos);
+					else assert(false);
+				}
+
+				// completing the PV
+
+				thread.pv[i].depth = depth - uci::stop;
+				thread.pv[i].seldepth = pv::get_seldepth(thread.pv[i].move, thread.pv[i].seldepth, depth);
+
+				if (score != -SCORE_MATE)
+				{
+					if (pick.tb_pos)
+						score::tb::adjust(score, tb_score);
+
+					thread.pv[i].score = score;
+					pv::prune(thread, i, pos);
+				}
+			}
+
+			// providing search information at every iteration
+
+			if (thread.main)
+				output::info(thread, pick.list.moves);
+
+			if (expiration::abort(thread.chrono, thread.pv[MAIN].move, pick, depth, thread.pv[MAIN].score))
+				break;
+		}
+
+		// concluding the search
+
+		if (thread.main && uci::multipv == 1 && thread.pv[MAIN].wrong)
+			output::tb_info(tb_score);
+	}
+}
+
+void sthread::start_search()
+{
+	// entering the search through the search-thread
+
+	thread_pool::searching += 1;
+
+	// initializing search parameters
+
+	this->nodes = 0LL;
+	count = node_count{};
+
+	for (int d{}; d <= lim::depth; ++d)                 { stack[d] = sstack{}; stack[d].depth = d; }
+	for (int i{}; i <= uci::move_offset; ++i)             rep_hash[i] = uci::quiet_hash[i];
+	for (auto &piece : counter_move)                      for (auto &sq : piece) sq = MOVE_NONE;
+	for (auto &color : history) for (auto &piece : color) for (auto &sq : piece) sq = 0LL;
+
+	// initializing PV related things
+
+	pv.clear();
+	pv.resize(uci::multipv);
+	for (auto &d : tri_pv) for (auto &move : d) move = MOVE_NONE;
+
+	// starting the iterative deepening search
+
+	search::iterative_deepening(*this);
+
+	// waiting until all threads have finished their search
+
+	thread_pool::searching -= 1;
+	std::unique_lock<std::mutex> lock(thread_pool::mutex);
+	if (main)
+		while (thread_pool::searching) thread_pool::cv.wait(lock);
+	else
+		thread_pool::cv.notify_all();
+}
+
+void search::start(thread_pool &threads, int64 movetime)
+{
+	// starting point of the search hierarchy
+
+	assert(uci::limit.depth >= 1);
+	assert(uci::limit.depth <= lim::depth);
+
+	threads.start_clock(movetime);
+
+	// starting all search threads
+
+	for (uint32 i{ MAIN + 1 }; i < threads.thread.size(); ++i)
+		threads.thread[i]->awake();
+	threads.thread[MAIN]->start_search();
+
+	// synchronizing threads if the main thread had't concluded at least the first iteration
+	// this is done to always try to provide a best-move & ponder-move
+
+	uint32 &bestmove{ threads.thread[MAIN]->pv[MAIN].move[0] };
+	uint32 &ponder  { threads.thread[MAIN]->pv[MAIN].move[1] };
+	if (!bestmove)
+	{
+		for (uint32 i{ MAIN + 1 }; i < threads.thread.size(); ++i)
+		{
+			if (threads.thread[i]->pv[MAIN].move[0])
+			{
+				bestmove = threads.thread[i]->pv[MAIN].move[0];
+				ponder   = threads.thread[i]->pv[MAIN].move[1];
+				break;
 			}
 		}
 	}
 
-	// detecting checkmate
+	// adding up some counters after the search for analysis purpose
 
-	if (in_check && pick.attempts == -1)
-		return stack->depth - MAX_SCORE;
+	nodes.total_time  += threads.thread[MAIN]->chrono.elapsed();
+	nodes.total_count += threads.thread[MAIN]->get_nodes();
+	nodes.total_tbhit += threads.thread[MAIN]->get_tbhits();
 
-	assert(best_score > MIN_SCORE && best_score < MAX_SCORE);
-	return best_score;
+	for (auto t : threads.thread)
+	{
+		nodes.fail_high   += t->count.fail_high;
+		nodes.fail_high_1 += t->count.fail_high_1;
+		nodes.qs          += t->count.qs;
+	}
+
+	// displaying best move & ponder move
+
+	sync::cout << "bestmove " <<  move::algebraic(bestmove)
+		<< (ponder ? " ponder " + move::algebraic(ponder) : "") << std::endl;
+	uci::stop = true;
 }

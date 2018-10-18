@@ -1,5 +1,5 @@
 /*
-  Monolith 0.4  Copyright (C) 2017 Jonas Mayr
+  Monolith 1.0  Copyright (C) 2017-2018 Jonas Mayr
 
   This file is part of Monolith.
 
@@ -27,7 +27,9 @@
 
 namespace bit
 {
-	const uint64 file[]
+	// bitboard tables concerning files
+
+	constexpr uint64 file[]
 	{
 		0x0101010101010101ULL,
 		0x0202020202020202ULL,
@@ -39,7 +41,12 @@ namespace bit
 		0x8080808080808080ULL
 	};
 
-	const uint64 rank[]
+	constexpr uint64 file_west[2]{ file[A], file[H] };
+	constexpr uint64 file_east[2]{ file[H], file[A] };
+
+	// bitboard tables concerning ranks
+
+	constexpr uint64 rank[]
 	{
 		0xffULL << 0,
 		0xffULL << 8,
@@ -51,9 +58,33 @@ namespace bit
 		0xffULL << 56
 	};
 
+	constexpr uint64 rank_promo{ rank[R1] | rank[R8] };
+
+	// bitboard tables concerning color
+
+	constexpr uint64 white{ 0xaa55aa55aa55aa55 };
+	constexpr uint64 black{ 0x55aa55aa55aa55aa };
+
+	uint64 color(uint64 b);
+
+	// performing bitboard operations
+
 	uint64 shift(uint64 b, int shift);
 	void real_shift(uint64 &b, int shift);
 
 	int popcnt(uint64 b);
 	unsigned long scan(uint64 b);
+
+	uint32 byteswap32(uint32 b);
+	uint64 byteswap64(uint64 b);
+}
+
+// directing the shift of bitboards
+
+namespace shift
+{
+	constexpr int capture_west[]{  9, 55,  -9 };
+	constexpr int capture_east[]{  7, 57,  -7 };
+	constexpr int push[]        {  8, 56,  -8 };
+	constexpr int push2x[]      { 16, 48, -16 };
 }

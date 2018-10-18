@@ -1,5 +1,5 @@
 /*
-  Monolith 0.4  Copyright (C) 2017 Jonas Mayr
+  Monolith 1.0  Copyright (C) 2017-2018 Jonas Mayr
 
   This file is part of Monolith.
 
@@ -18,28 +18,31 @@
 */
 
 
-#include "engine.h"
+#include "eval.h"
+#include "zobrist.h"
+#include "syzygy.h"
+#include "stream.h"
+#include "attack.h"
+#include "magic.h"
 #include "uci.h"
 #include "main.h"
 
-namespace
-{
-	static_assert(sizeof(uint8)  == 1, "char");
-	static_assert(sizeof(uint16) == 2, "short");
-	static_assert(sizeof(uint32) == 4, "int");
-	static_assert(sizeof(uint64) == 8, "long long");
-}
-
-int main(int argc, char* argv[])
+int main(int, char* argv[])
 {
 	std::cout << "Monolith " << uci::version_number << std::endl;
 
-	engine::init_path(argv);
-	engine::init_book();
-	engine::init_magic();
-	engine::init_attack();
-	engine::init_zobrist();
-	engine::init_eval();
+	// initializing
+
+	filestream::set_path(argv);
+	filestream::open();
+	uci::open_book();
+	magic::index_table();
+	attack::fill_tables();
+	zobrist::init_keys();
+	syzygy::init_tablebases(uci::syzygy.path);
+	eval::fill_tables();
+
+	// starting the UCI communication protocol loop
 
 	uci::loop();
 	return 0;

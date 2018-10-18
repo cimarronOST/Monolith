@@ -1,5 +1,5 @@
 /*
-  Monolith 0.4  Copyright (C) 2017 Jonas Mayr
+  Monolith 1.0  Copyright (C) 2017-2018 Jonas Mayr
 
   This file is part of Monolith.
 
@@ -22,7 +22,8 @@
 
 #include "main.h"
 
-// representing the board position and all board states
+// representing the piece placement and all board states
+// essentially this is the virtual chessboard
 
 class board
 {
@@ -32,16 +33,16 @@ public:
 
 	uint64 pieces[6];
 	uint64 side[3];
-	uint8 piece_sq[64];
-	uint8 king_sq[2];
+	uint8 piece[64];
+	uint8 sq_king[2];
 
 	// representing all other positional essentials
 
-	int move_cnt;
-	int half_move_cnt;
+	int move_count;
+	int half_count;
 	int turn;
 	int xturn;
-	uint64 ep_sq;
+	uint64 ep_rear;
 	uint8 castling_right[4];
 
 	// keeping search & evaluation parameters updated with every move
@@ -53,7 +54,7 @@ public:
 	// setting up new position
 
 	void parse_fen(std::string fen);
-	uint8 get_rook_sq(int col, int dir) const;
+	uint8 sq_rook(int col, int dir) const;
 
 	// moving
 
@@ -73,10 +74,15 @@ public:
 	// giving additional information to the search
 
 	bool check() const;
+	bool gives_check(uint32 move);
 	bool lone_king() const;
 	bool recapture(uint32 move) const;
 
-	// checking for pseudo-legality
+	bool repetition(uint64 hash[], int offset) const;
+	bool draw(uint64 hash[], int offset) const;
+
+	// checking for legality
 
 	bool pseudolegal(uint32 move) const;
+	bool legal() const;
 };
