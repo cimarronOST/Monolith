@@ -30,11 +30,7 @@ to Ronald de Man for providing his [syzygy ETB probing code](https://github.com/
 
 ## Strength
 Even for the best human Grandmasters it should be very difficult to beat Monolith running even on slow hardware.
-Monolith 0.4 achieved about 2600 Elo on both [CCRL 40/4](http://www.computerchess.org.uk/ccrl/404/index.html) and [CCRL 40/40](http://www.computerchess.org.uk/ccrl/4040/index.html),
-and around 2430 Elo on [CEGT 40/4](http://www.cegt.net/40_4_Ratinglist/40_4_BestVersion/rangliste.html).
-Monolith 1.0 should be considerably stronger (bullet time-control):
-> ```Score of Monolith 1.0 vs Monolith 0.4: 6481 - 1470 - 2049  [0.751] 10000```
->> ```Elo difference: 191.36 +/- 6.70```
+Monolith 1.0 achieved about 2800 Elo on both [CCRL 40/4](http://www.computerchess.org.uk/ccrl/404/index.html) and [CCRL 40/40](http://www.computerchess.org.uk/ccrl/4040/index.html).
 
 
 ## Main changes to the previous version
