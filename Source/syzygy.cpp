@@ -578,12 +578,12 @@ namespace tbcore
 			: (tb_entry*)&tb_pawn[tb_count.pawns++]
 		};
 
-		if (tb_count.pieces == TB_MAX_PIECE)
+		if (tb_count.pieces > TB_MAX_PIECE)
 		{
 			sync::cout << "info string warning: tablebase piece-limit too low" << std::endl;
 			throw STOP_TABLEBASE;
 		}
-		if (tb_count.pawns == TB_MAX_PAWN)
+		if (tb_count.pawns > TB_MAX_PAWN)
 		{
 			sync::cout << "info string warning: tablebase pawn-limit too low" << std::endl;
 			throw STOP_TABLEBASE;
@@ -1921,7 +1921,7 @@ void syzygy::init_tablebases(std::string &path)
 				{
 					tbcore::init({ KINGS, p1, p2, p3, KINGS });
 
-					for (int p4{ p3 }; p4 <= QUEENS; ++p4)
+					for (int p4{ PAWNS }; p4 <= QUEENS; ++p4)
 						tbcore::init({ KINGS, p1, p2, p3, KINGS, p4 });
 					for (int p4{ PAWNS }; p4 <= p3; ++p4)
 						tbcore::init({ KINGS, p1, p2, p3, p4, KINGS });
