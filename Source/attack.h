@@ -38,18 +38,9 @@ namespace attack
 		std::array<bit64, 9> pin{};
 
 	public:
-		pin_mv() {}
-		pin_mv(const board &pos, color cl_king, color cl_piece)
-		{
-			find(pos, cl_king, cl_piece);
-		}
-
-		void find(const board &pos, color cl_king, color cl_piece);
-
 		bit64 operator[](square sq) const;
+		void find(const board &pos, color cl_king, color cl_piece);
 		void add(square sq, bit64 bb);
-		void reset(square sq);
-		void set_base(const bit64 &bb);
 	};
 
 	// rough value of all pieces in centipawn units
