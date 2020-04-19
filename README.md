@@ -1,103 +1,91 @@
-# Monolith 1.0
+# Monolith 2
 
-This program is distributed under the GNU General Public License.
+Monolith is a powerful open source chess engine written in C++17, compliant with the Universal Chess Interface (UCI) protocol.
+It uses the traditional alpha-beta search algorithm. The search and parallelization-algorithms, the position evaluation principles,
+the fast move-generating methods, the support for opening books and endgame table-bases, all of it wasn't newly invented in this engine.
+Monolith is rather a new original implementation of many well-established concepts of computer chess, resulting in its own unique personality as a chess playing entity.
+
+Playing against the top-notch chess engines leading the rating lists, Monolith will have not much of a winning chance. That picture however is totally different when playing against humans, be it hobby-players or chess Grandmasters, who almost certainly wont stand a chance against Monolith.
+
+Monolith is not a standalone chess program and needs a graphical interface in order to be used properly, for example the freely available [Arena](http://www.playwitharena.de), [Cute Chess](https://github.com/cutechess/cutechess) and [Tarrash](https://www.triplehappy.com) for PCs or [Chess for Android](https://play.google.com/store/apps/details?id=com.google.android.chess) and [DroidFish](https://play.google.com/store/apps/details?id=org.petero.droidfish) for Android devices.
+
+
+## License
+Monolith is distributed under the GNU General Public License.
 Please read LICENSE for more information.
-
-Monolith is an open source UCI-compliant chess engine written in C++11 by a not too busy medical student
-who prefers to spend his time messing with computer chess rather than to seek better grades.
-It's simply much more fun.
-
-Monolith is not a standalone chess program, but needs a GUI in order to be used properly,
-for example the freely available [Arena](http://www.playwitharena.com), [Cute Chess](https://github.com/cutechess/cutechess) or [Tarrash](https://www.triplehappy.com).
-Big thanks go to the [Chess Programming Wiki](https://www.chessprogramming.org) and to the equally fantastic [talkchess.com](http://www.talkchess.com)-community which offer
-an endless source of chess-programming-wisdom and inspiration, to the [CCRL](http://www.computerchess.org.uk/ccrl) group and the [CEGT](http://www.cegt.net) team for including the engine in their rating lists,
-and to all the open-source chess-engines out there which never fail to offer a helpful insight when all seems lost.
-Special thanks also go to Tom Kerrigan who provided a lot of information about his [simplified ABDADA](http://www.tckerrigan.com/Chess/Parallel_Search/Simplified_ABDADA) SMP-algorithm,
-to Ronald de Man for providing his [syzygy ETB probing code](https://github.com/syzygy1/tb), and to [grzegoszwu](https://www.deviantart.com/grzegoszwu/art/Tulkas-battlecry-613671743) for the picture.
 
 
 ## Main features
-- move-generation: staged, pseudo-legal, using fancy-magic or PEXT bitboards
-- search-algorithm: alpha-beta- & principal-variation-search
-- evaluation: hand crafted, tuned automatically with the Texel-tuning-method
-- support for:
+- Move-generation: staged, pseudo-legal, using magic bitboards or PEXT bitboards
+- Evaluation: hand crafted, tuned automatically with the Texel-tuning-method
+- Search: alpha-beta algorithm & principal variation search
+- Support for:
   - Universal Chess Interface (UCI) protocol
-  - multiple CPU-cores through simplified-ABDADA
-  - PolyGlot opening-books
-  - Syzygy endgame-tablebases
+  - Multiple CPU-threads through Shared Hash Table & ABDADA
+  - PolyGlot opening books
+  - Syzygy endgame table-bases
   - Fischer Random Chess / Chess960
 
 
 ## Strength
-Even for the best human Grandmasters it should be very difficult to beat Monolith running even on slow hardware.
-Monolith 1.0 achieved about 2800 Elo on both [CCRL 40/4](http://www.computerchess.org.uk/ccrl/404/index.html) and [CCRL 40/40](http://www.computerchess.org.uk/ccrl/4040/index.html).
+Monolith 1 achieved about 2850 Elo on [CCRL 40/15](https://www.computerchess.org.uk/ccrl/4040/cgi/engine_details.cgi?print=Details&each_game=1&eng=Monolith%201.0%2064-bit%204CPU#Monolith_1_0_64-bit_4CPU) and 2910 Elo on [CCRL Blitz](https://www.computerchess.org.uk/ccrl/404/cgi/engine_details.cgi?print=Details&each_game=1&eng=Monolith%201.0%2064-bit%204CPU#Monolith_1_0_64-bit_4CPU).\
+Monolith 2 should be considerably stronger.
 
 
-## Main changes to the previous version
-- [x] added support for multi-processors with simplified-ABDADA
-- [x] added support for syzygy endgame-tablebases
-- [x] added support for PEXT instruction
-- [x] added new search enhancements (SEE pruning, singular extension, LMR, aspiration window)
-- [x] added new evaluation terms
-- [x] tuned the evaluation automatically with Texel's tuning method
-- [x] simplified the code
-- [x] fixed a bug that caused crashes while moving backwards through the game
+## Which executable to use
+- **x64-pext** is the fastest, making use of the PEXT instruction which only works on recent CPUs (Intel Haswell and newer).
+- **x64-popcnt** is almost as fast, making use of the POPCNT instruction which is supported by most non-ancient CPUs.
+- **x64** does not need modern CPU instruction sets and therefore runs a bit slower but works also on old computers requiring only a 64-bit architecture.
+- **x86** runs also on 32-bit systems but is considerably slower because there is no dedicated code for 32-bit instruction-sets.
+- **armv8** targets the 64-bit ARM architecture (AArch64) and works on most devices running Android, like mobile phones.
+- **armv7** targets the 32-bit ARM architecture and runs also on old Android devices.
 
 
-## Which pre-compiled executable to use
-- **x64_pext** is the fastest, making use of the PEXT instruction which only works with recent CPUs (Intel Haswell and newer).
-- **x64_popcnt** is almost as fast, making use of the POPCNT instruction which is not supported by older CPUs.
-- **x64** does not need modern CPU instruction sets and therefore runs a bit slower, but works also on older computers (requiring only a 64-bit architecture).
-- **x86** runs also on 32-bit systems, but is considerably slower because there is no dedicated code for 32-bit instruction-sets.
-
-
-#### Compile it yourself
-Simply run ```make``` if you don't want to be bothered with optimized processor instructions.
-
-For more options, run ```make [target] [ARCH=architecture] [COMP=compiler]```
-- supported targets:
-  - ```release``` (default): standard optimized build.
-  - ```release_log```: same build but with all engine output redirected to a log-file.
-  - ```tune```: build with enabled ability to tune the evaluation.
-- supported architectures:
-  - ```x64``` (default)
+#### You can compile it yourself
+Run ```make release [ARCH=architecture] [COMP=compiler]```
+- supported architectures, see above for more detailed descriptions:
+  - ```x64```
   - ```x64-pext```
   - ```x64-popcnt```
   - ```x86```
-- supported compilers:
-  - ```clang``` (default): Clang C++ compiler
-  - ```gcc```: GNU C++ compiler
-  - ```icc```: Intel C++ compiler
+  - ```armv8```
+  - ```armv7```
+- some supported compilers:
+  - ```g++``` (default): GNU C++ compiler
+  - ```clang++```: Clang C++ compiler
+  - ```icpc```: Intel C++ compiler
 
-> Running the Monolith ```bench``` command should result in a total of ```33143855``` nodes if compiled correctly.
+Running the Monolith ```bench``` command should result in a total of ```22296396``` nodes if compiled correctly.
 
 
 ## UCI options overview
-- **Threads**: Specifying the number of CPU cores that can be used in parallel. Default is set to 1.
-- **Ponder**: Searching also during the opponents turn. Default is set to false.
-- **OwnBook**: Giving the engine access to a PolyGlot opening book. Default is set to true, i.e. if the book specified by **Book File** (see below) is found, it will be used.
-- **Book File**: Resetting the location in which the PolyGlot opening book is placed. Default is set to the same location as the engine, the default book name is 'monolith.bin'.
-- **Hash**: Specifying the size of the transposition hash table. Default is set to 128 MB.
-- **Clear Hash**: Clearing the hash table (to be able to start searching without being affected by previous hash entries).
-- **UCI_Chess960**: Playing the chess variant Fischer Random Chess / Chess960. Default is set to false.
-- **MultiPV**: Specifying the number of the engines best variations to be displayed in detail. Default is set to 1.
-- **Contempt**: Resetting the level of the internal draw score. A positive contempt value means that draws are being avoided in order to play more aggressively and risky. A negative contempt value means that draws are being pursued more likely in order to play safely and less risky. Default is set to 0.
-- **Move Overhead**: Adding a time buffer for every move if communications between GUI and engine are delayed, in order to avoid time losses. Default is set to 0 milliseconds.
-- **SyzygyPath**: Specifying the location of the folders containing the Syzygy tablebases. Default is set to <empty>. Multiple paths should be separated with a semicolon (;) on Windows and with a colon (:) on Linux.
-- **SyzygyProbeDepth**: Limiting the use of the tablebases to nodes which remaining depth is higher than SyzygyProbeDepth. Default is set to 5, i.e. the tablebases are used until the remaining depth of a node is 5 or smaller. A higher value is more cache-friendly and should be used if nps drop a lot because of tablebase-probing, a smaller value might lead to better play on computers where tablebases can be accessed very fast.
-- **SyzygyProbeLimit**: Limiting the number of pieces that have to be on the board before the tablebases are probed. Default is set to 6 which is the upper limit of pieces that Syzygy tablebases currently cover.
-- **Syzygy50MoveRule**: Considering the 50-move-rule while probing Syzygy tablebases. Default is set to true. Setting it to false can be useful to analyze cursed wins or blessed losses.
+- **Threads**: Number of CPU threads than can be used in parallel. Default is ```1```.
+- **SMP**: Algorithm to be used when searching with multiple threads. Default is ```SHT```. ```ABDADA``` performs equally good on a small number of threads, but may perform better with more threads.
+- **Ponder**: Searching also during the turn of the opponent. Default is ```false```.
+- **Hash**: Size of the Transposition Table. Default is ```128``` MB.
+- **Clear Hash**: Clearing the hash table (i.e. to be able to start a new search without being affected by previous search results saved in the Transposition Table).
+- **UCI_Chess960**: Playing the chess variant Fischer Random Chess / Chess960. Default is ```false```.
+- **MultiPV**: Number of Principal Variations to be displayed in detail. Default is ```1```. A higher value may be useful for analysis of positions, but decreases the playing strength of the engine.
+- **Move Overhead**: Time buffer if the communication with the engine is delayed, in order to avoid time losses. Default is ```0``` milliseconds.
+- **Log**: Redirecting all output of the engine to a log file. Default is ```false```.
+- **OwnBook**: Using own PolyGlot opening book. Default is ```true```, i.e. if the book specified by Book File (see below) is found, it will be used.
+- **Book File**: Location of the PolyGlot opening book. Default is set to the same location as the running engine, the default book name is ```Monolith.bin```.
+- **SyzygyPath**: Location of the Syzygy table-bases. Default is ```<empty>```. Multiple paths should be separated with a semicolon (```;```) on Windows and with a colon (```:```) on Linux.
+- **SyzygyProbeDepth**: Limiting the use of the table-bases to nodes which have a remaining depth higher than SyzygyProbeDepth. Default is set to ```5```, i.e. the table-bases are only used if the remaining search-depth of a node is 5 or higher, thus preventing the expensive probing at nodes near the leaves of the search-tree. A higher value is more cache-friendly and should be used if the speed of the engine drops a lot because of slow table-base access. A smaller value might lead to stronger play in the endgame on computers where table-bases can be accessed very fast (e.g. SSD).
+- **SyzygyProbeLimit**: Number of pieces that have to be on the board in the endgame before the table-bases are probed. Default is ```7``` which is the upper limit of pieces that Syzygy table-bases currently support.
 
 
 ### Additional unofficial commands
-- ```bench```: Running an internal benchmark consisting of a fixed set of positions.
-- ```bench [positions.epd] [time]```: Running a benchmark with positions in EPD format from an external file for the time specified in milliseconds.
-- ```perft```: Running a performance test on some positions using legal move-generation.
-- ```perft pseudo```: Running the same performance test using pseudo-legal move-generation.
-- ```eval```: Outputting the detailed static evaluation of the current position.
-- ```board```: Displaying the current chess-board.
-- ```summary```: Displaying some statistics about the previous search.
-- ```tune [quiet-positions.epd]```: Tuning evaluation parameters using quiet positions if compilation-target ```tune``` was enabled.
+- ```bench```: Running a couple of benchmark searches of an internal set of various positions.
+- ```perft [depth]```: Running perft up to [depth] on the current position.
+- ```eval```: Computing the static evaluation of the current position without the use of the search function.
+- ```board```: Displaying a basic character-chessboard of the current position.
+- ```tune [positions.epd] [threads]```: Tuning the evaluation parameters with a set of positions. This option is only available if the compilation target ```tune``` was chosen.
+
+
+## Acknowledgements
+Big thanks go to the [Chess Programming Wiki](https://www.chessprogramming.org) and to the equally fantastic community on [talkchess.com](http://www.talkchess.com) which offer an endless source of wisdom and inspiration. With these great resources everybody can write a chess engine. Thanks also to the [CCRL](http://www.computerchess.org.uk/ccrl) group for including the engine in their rating lists since the very start of development.\
+Some of the ideas incorporated into Monolith derive from the marvelous and insanely strong chess engines [Stockfish](https://github.com/official-stockfish/Stockfish) and [Ethereal](https://github.com/AndyGrant/Ethereal), so thanks to all the people involved in those engines for pushing the limits and making their ideas open source. Special thanks also go to Tom Kerrigan who provided a lot of information about the [simplified ABDADA](http://www.tckerrigan.com/Chess/Parallel_Search/Simplified_ABDADA) SMP algorithm, to Ronald de Man for providing the [Syzygy endgame table-bases & probing code](https://github.com/syzygy1/tb), to Fabien Letouzey for the [PolyGlot opening book format](http://hgm.nubati.net/cgi-bin/gitweb.cgi?p=polyglot.git), and to [grzegoszwu](https://www.deviantart.com/grzegoszwu/art/Tulkas-battlecry-613671743) for lending Monolith a graphical face.
 
 
 ## Have fun
