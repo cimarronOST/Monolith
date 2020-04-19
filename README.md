@@ -12,7 +12,9 @@ Monolith is not a standalone chess program and needs a graphical interface in or
 
 ## Strength
 Monolith 1 is ranked at around 2850 Elo on [CCRL 40/15](https://www.computerchess.org.uk/ccrl/4040/cgi/engine_details.cgi?print=Details&each_game=1&eng=Monolith%201.0%2064-bit%204CPU#Monolith_1_0_64-bit_4CPU) and 2910 Elo on [CCRL Blitz](https://www.computerchess.org.uk/ccrl/404/cgi/engine_details.cgi?print=Details&each_game=1&eng=Monolith%201.0%2064-bit%204CPU#Monolith_1_0_64-bit_4CPU).\
-Monolith 2 should be considerably stronger.
+Monolith 2 is considerably stronger in bullet games:
+> Score of Monolith 2 vs Monolith 1: 6949 - 886 - 2165  [0.803] 10000\
+Elo difference: 244.26 +/- 6.94
 
 
 ## Main features
