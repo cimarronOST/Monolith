@@ -10,9 +10,9 @@ Playing against the top-notch chess engines leading the rating lists, Monolith w
 Monolith is not a standalone chess program and needs a graphical interface in order to be used properly, for example the freely available [Arena](http://www.playwitharena.de), [Cute Chess](https://github.com/cutechess/cutechess) and [Tarrash](https://www.triplehappy.com) for PCs or [Chess for Android](https://play.google.com/store/apps/details?id=com.google.android.chess) and [DroidFish](https://play.google.com/store/apps/details?id=org.petero.droidfish) for Android devices.
 
 
-## License
-Monolith is distributed under the GNU General Public License.
-Please read LICENSE for more information.
+## Strength
+Monolith 1 is ranked at around 2850 Elo on [CCRL 40/15](https://www.computerchess.org.uk/ccrl/4040/cgi/engine_details.cgi?print=Details&each_game=1&eng=Monolith%201.0%2064-bit%204CPU#Monolith_1_0_64-bit_4CPU) and 2910 Elo on [CCRL Blitz](https://www.computerchess.org.uk/ccrl/404/cgi/engine_details.cgi?print=Details&each_game=1&eng=Monolith%201.0%2064-bit%204CPU#Monolith_1_0_64-bit_4CPU).\
+Monolith 2 should be considerably stronger.
 
 
 ## Main features
@@ -25,11 +25,6 @@ Please read LICENSE for more information.
   - PolyGlot opening books
   - Syzygy endgame table-bases
   - Fischer Random Chess / Chess960
-
-
-## Strength
-Monolith 1 achieved about 2850 Elo on [CCRL 40/15](https://www.computerchess.org.uk/ccrl/4040/cgi/engine_details.cgi?print=Details&each_game=1&eng=Monolith%201.0%2064-bit%204CPU#Monolith_1_0_64-bit_4CPU) and 2910 Elo on [CCRL Blitz](https://www.computerchess.org.uk/ccrl/404/cgi/engine_details.cgi?print=Details&each_game=1&eng=Monolith%201.0%2064-bit%204CPU#Monolith_1_0_64-bit_4CPU).\
-Monolith 2 should be considerably stronger.
 
 
 ## Which executable to use
@@ -86,6 +81,11 @@ Running the Monolith ```bench``` command should result in a total of ```22296396
 ## Acknowledgements
 Big thanks go to the [Chess Programming Wiki](https://www.chessprogramming.org) and to the equally fantastic community on [talkchess.com](http://www.talkchess.com) which offer an endless source of wisdom and inspiration. With these great resources everybody can write a chess engine. Thanks also to the [CCRL](http://www.computerchess.org.uk/ccrl) group for including the engine in their rating lists since the very start of development.\
 Some of the ideas incorporated into Monolith derive from the marvelous and insanely strong chess engines [Stockfish](https://github.com/official-stockfish/Stockfish) and [Ethereal](https://github.com/AndyGrant/Ethereal), so thanks to all the people involved in those engines for pushing the limits and making their ideas open source. Special thanks also go to Tom Kerrigan who provided a lot of information about the [simplified ABDADA](http://www.tckerrigan.com/Chess/Parallel_Search/Simplified_ABDADA) SMP algorithm, to Ronald de Man for providing the [Syzygy endgame table-bases & probing code](https://github.com/syzygy1/tb), to Fabien Letouzey for the [PolyGlot opening book format](http://hgm.nubati.net/cgi-bin/gitweb.cgi?p=polyglot.git), and to [grzegoszwu](https://www.deviantart.com/grzegoszwu/art/Tulkas-battlecry-613671743) for lending Monolith a graphical face.
+
+
+## License
+Monolith is distributed under the GNU General Public License.
+Please read LICENSE for more information.
 
 
 ## Have fun
