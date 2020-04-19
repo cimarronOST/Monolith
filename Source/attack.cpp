@@ -53,6 +53,15 @@ namespace see
 	}
 }
 
+
+bit64 attack::pin_mv::operator[](square sq) const
+{
+	// retrieving the move restriction of the pinned piece
+
+	verify(pin[0] == 0ULL || pin[0] == bit::max);
+	return pin[pin_lc[sq]];
+}
+
 void attack::pin_mv::find(const board &pos, color cl_king, color cl_piece)
 {
 	// finding all pieces that are pinned to the king and defining their legal move zone
@@ -98,14 +107,6 @@ void attack::pin_mv::find(const board &pos, color cl_king, color cl_piece)
 	}
 }
 
-bit64 attack::pin_mv::operator[](square sq) const
-{
-	// retrieving the move restriction of the pinned piece
-
-	verify(pin[0] == 0ULL || pin[0] == bit::max);
-	return pin[pin_lc[sq]];
-}
-
 void attack::pin_mv::add(square sq, bit64 bb)
 {
 	// creating an index for every pin to save memory
@@ -120,16 +121,6 @@ void attack::pin_mv::add(square sq, bit64 bb)
 		verify(pin_cnt <= 8);
 		pin[pin_cnt] = bb;
 	}
-}
-
-void attack::pin_mv::reset(square sq)
-{
-	pin_lc[sq] = 0;
-}
-
-void attack::pin_mv::set_base(const bit64 &bb)
-{
-	pin[0] = bb;
 }
 
 bit64 attack::check(const board &pos, color cl, bit64 mask)
