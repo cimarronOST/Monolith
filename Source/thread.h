@@ -1,6 +1,5 @@
 /*
-  Monolith 1.0  Copyright (C) 2017-2018 Jonas Mayr
-
+  Monolith 2 Copyright (C) 2017-2020 Jonas Mayr
   This file is part of Monolith.
 
   Monolith is free software: you can redistribute it and/or modify
@@ -20,88 +19,87 @@
 
 #pragma once
 
+#include <thread>
 #include <atomic>
 #include <condition_variable>
 #include <mutex>
-#include <thread>
 
+#include "movesort.h"
+#include "eval.h"
 #include "move.h"
-#include "chronos.h"
-#include "pawn.h"
-#include "position.h"
+#include "time.h"
+#include "board.h"
+#include "types.h"
 #include "main.h"
 
-// managing parallel threading of the search
+// managing parallelization of the search
 
 class sthread
 {
-	// variables to synchronize search cycles
-
 private:
-	std::mutex mutex;
-	std::condition_variable cv;
+	// variables to synchronize search cycles between the threads
+
+	std::mutex mutex{};
+	std::condition_variable cv{};
 
 	bool search{};
 	bool exit{};
 
+public:
 	// various variables to assure functionality and independence
 
-public:
-	std::thread std_thread;
-	std::vector<sthread*> *pool;
-	board &pos;
-	chronometer chrono;
-	bool main{};
+	int index{};
+	std::thread std_thread{};
+	std::vector<sthread*> *pool{};
+	chronometer chrono{};
+	board& pos;
 
-	// uncluttering search parameters with the search-stack
+	// every thread has its own search stack
 
 	struct sstack
 	{
-		int depth;
-		uint32 move;
-		uint32 skip_move;
-		uint32 killer[2];
-		struct null_copy
-		{
-			uint64 ep;
-			uint16 capture;
-		} copy;
-		bool no_pruning;
-	} stack[lim::depth + 1]{};
+		depth dt{};
+		score sc{ score::none };
+		move  mv{};
+		move  singular_mv{};
+		killer_list killer{};
+		struct null_move { bit64 ep{}; square sq{}; } null_mv{};
+		move_list quiet_mv{};
+		move_list defer_mv{};
+		std::array<int, lim::moves> mv_cnt{};
+		bool pruning{ true };
+	};
+	std::array<sstack, lim::dt + 1> stack{}; 
 
-	// search & move-ordering parameters
-
-	int history[2][6][64]{};
-	uint32 counter_move[6][64]{};
-	uint64 rep_hash[256 + lim::depth]{};
+	// other search parameters
+	
+	history hist{};
+	counter_list counter{};
+	std::array<key64, 256> rep_hash{};
 	bool use_syzygy{};
 
-	// keeping track of the principal variation
+	// keeping track of the principal variation, node count and tablebase hits
 
-	std::vector<move::variation> pv;
-	uint32 tri_pv[lim::depth + 1][lim::depth]{};
+	std::vector<move_var> pv;
+	int64 cnt_n{};
+	int64 cnt_tbhit{};
 
-	// counting nodes
+	// using king-pawn hash table to speed up the evaluation
 
-	int64 nodes{};
-	struct node_count
-	{
-		int64 tbhit;
-		int64 fail_high;
-		int64 fail_high_1;
-		int64 qs;
-	} count{};
-
-	// using pawn hash table
-
-	pawn pawnhash;
+	kingpawn_hash hash{ kingpawn_hash::allocate };
 
 private:
-	void idle_loop();
+	void idle();
 
 public:
+	// constructor used for the texel tuning method
+
+	sthread(board& new_pos) : pos{ new_pos } { }
+
+	// constructor used for the main search
+
 	sthread(board &new_pos, std::vector<sthread*> *all_threads)
-		: pool(all_threads), pos(new_pos), pawnhash(true) { }
+		: pool{ all_threads }, pos{ new_pos } { }
 
 	~sthread()
 	{
@@ -117,10 +115,12 @@ public:
 	void start_search();
 	void awake();
 
-	// collecting node-count information
+	// collecting node-count and tablebase-hit information & rearranging PVs
 
+	bool  main() const { return index == 0; }
 	int64 get_nodes()  const;
 	int64 get_tbhits() const;
+	void  rearrange_pv(int mv_cnt);
 };
 
 // bundling all the search threads into one interface
@@ -130,10 +130,8 @@ class thread_pool
 private:
 	board &pos;
 
-	// containing the search threads
-
 public:
-	std::vector<sthread*> thread;
+	std::vector<sthread*> thread{};
 
 	// synchronizing thread execution
 
@@ -141,7 +139,7 @@ public:
 	static std::condition_variable cv;
 	static std::atomic<int> searching;
 
-	thread_pool(uint32 size, board &new_pos) : pos(new_pos)
+	thread_pool(std::size_t size, board &new_pos) : pos{ new_pos }
 	{
 		resize(size);
 	}
@@ -154,8 +152,11 @@ public:
 
 	// managing the search threads
 
-	void resize(uint32 size);
+	void resize(std::size_t size);
 	void start_all() const;
 	void stop_search();
-	void start_clock(int64 &movetime);
+	void start_clock(const timemanage::move_time &movetime);
+	void extend_time(score drop);
+	void clear_history();
+	std::tuple<move, move> get_bestmove() const;
 };

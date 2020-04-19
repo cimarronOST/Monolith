@@ -1,6 +1,5 @@
 /*
-  Monolith 1.0  Copyright (C) 2017-2018 Jonas Mayr
-
+  Monolith 2 Copyright (C) 2017-2020 Jonas Mayr
   This file is part of Monolith.
 
   Monolith is free software: you can redistribute it and/or modify
@@ -20,24 +19,28 @@
 
 #pragma once
 
-#include <chrono>
-
+#include "types.h"
 #include "main.h"
 
-// allocating the searchtime for the current move
+// allocating the optimal searchtime for the current move
 
-class chronomanager
+class timemanage
 {
 public:
-	chronomanager() : time{}, incr{}, moves_to_go{ 50 }, movetime{ lim::movetime }, infinite{ true } { }
+	std::array<milliseconds, 2> time{};
+	std::array<milliseconds, 2> incr{};
+	int movestogo{};
+	bool restricted{ true };
 
-	int time[2];
-	int incr[2];
-	int moves_to_go;
-	int64 movetime;
-	bool infinite;
+	struct move_time
+	{
+		milliseconds target;
+		milliseconds tolerable;
+		bool infinite() const;
+		bool fixed() const;
+	} movetime{ lim::movetime, milliseconds(0) };
 
-	int64 get_movetime(int turn);
+	move_time get_movetime(color cl);
 };
 
 // accurate internal clock
@@ -45,15 +48,19 @@ public:
 class chronometer
 {
 private:
-	std::chrono::time_point<std::chrono::system_clock> start_time;
+	std::chrono::time_point<std::chrono::system_clock> start_time{};
 
 public:
 	chronometer() { start(); }
 
 	int hits{};
-	int64 max{};
+	timemanage::move_time movetime{};
+
+	static int hit_threshold;
+	static void reset_hit_threshold();
 
 	void start();
-	void set(int64 &movetime);
-	int64 elapsed() const;
+	void set(const timemanage::move_time& movetime);
+	void extend(score drop);
+	milliseconds elapsed() const;
 };

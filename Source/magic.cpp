@@ -1,6 +1,5 @@
 /*
-  Monolith 1.0  Copyright (C) 2017-2018 Jonas Mayr
-
+  Monolith 2 Copyright (C) 2017-2020 Jonas Mayr
   This file is part of Monolith.
 
   Monolith is free software: you can redistribute it and/or modify
@@ -18,156 +17,152 @@
 */
 
 
-#include "utilities.h"
+#include "random.h"
 #include "bit.h"
 #include "magic.h"
 
-magic::square_entry magic::slider[2][64]{};
-std::vector<uint64> magic::attack_table;
+#if defined(PEXT)
+#include <immintrin.h>
+#endif
+
+std::array<std::array<magic::sq_entry, 64>, 2> magic::slider{};
+std::vector<bit64> magic::attack_table{};
 
 namespace magic
 {
-	// one table is used for both rooks and bishops
+	// one table is used for both bishops and rooks, ~860 KB
 
-	constexpr int table_size{ 102400 + 5248 };
-
-	void init_mask(int sl)
+	namespace size
 	{
-		// generating corresponding ray masks for each square
+		constexpr int bishop{ 5248 };
+		constexpr int rook{ 102400 };
+		constexpr int table{ bishop + rook };
+	}
 
-		assert(sl == ROOK || sl == BISHOP);
+	void init_mask(piece pc)
+	{
+		// generating corresponding masks for each square
 
-		for (int sq{ H1 }; sq <= A8; ++sq)
+		for (square sq{ h1 }; sq <= a8; sq += 1)
 		{
-			auto sq_bit{ 1ULL << sq };
-			for (auto dir{ sl }; dir < 8; dir += 2)
+			bit64 sq_bit{ bit::set(sq) };
+			for (int dr{ pc ^ 1 }; dr < 8; dr += 2)
 			{
-				auto flood{ sq_bit };
-				while (!(flood & ray[dir].boarder))
+				bit64 ray{ sq_bit };
+				while (!(ray & shift::dr[dr].boarder))
 				{
-					slider[sl][sq].mask |= flood;
-					bit::real_shift(flood, ray[dir].shift);
+					slider[pc][sq].mask |= ray;
+					ray = bit::shift(ray, shift::dr[dr].shift);
 				}
 			}
-			slider[sl][sq].mask ^= sq_bit;
+			slider[pc][sq].mask ^= sq_bit;
 		}
 	}
 
-	void init_blocker(int sl, std::vector<uint64> &blocker)
+	void init_blocker(piece pc, std::vector<bit64> &blocker)
 	{
 		// generating all possible blocker boards for each square
 
-		assert(sl == ROOK || sl == BISHOP);
-		assert(blocker.size() == 0 || blocker.size() == 102400);
-
-		bool bit[12]{};
-
-		for (int sq{ H1 }; sq <= A8; ++sq)
+		struct split_mask { bool on; bit64 bit; };
+		for (auto &sq : slider[pc])
 		{
-			slider[sl][sq].offset = static_cast<int>(blocker.size());
-			auto mask{ slider[sl][sq].mask };
+			std::vector<split_mask> split{};
+			bit64 mask{ sq.mask };
 
-			int bits_set{};
-			uint64 split_mask[12]{};
 			while (mask)
 			{
-				split_mask[bits_set++] = 1ULL << bit::scan(mask);
+				split.push_back(split_mask{ false, bit::set(bit::scan(mask)) });
 				mask &= mask - 1;
 			}
 
-			assert(bits_set <= 12);
-			assert(bits_set >=  5);
-			assert(bit::popcnt(slider[sl][sq].mask) == bits_set);
+			verify((int)split.size() >= 5 && (int)split.size() <= 12);
+			verify((int)split.size() == bit::popcnt(sq.mask));
 
-			slider[sl][sq].shift = 64 - bits_set;
+			sq.shift  = 64 - int(split.size());
+			sq.offset = int(blocker.size());
 
 			// permuting through all possible combinations
 
-			auto permutations{ 1 << bits_set };
+			int permutations{ 1 << split.size() };
 			for (int p{}; p < permutations; ++p)
 			{
 				mask = 0ULL;
-				for (int b{}; b < bits_set; ++b)
+				for (uint32 b{}; b < split.size(); ++b)
 				{
 					if (p % (1 << b) == 0)
-						bit[b] = !bit[b];
+						split[b].on = !split[b].on;
 
-					if (bit[b])
-						mask |= split_mask[b];
+					if (split[b].on)
+						mask |= split[b].bit;
 				}
 				blocker.push_back(mask);
 			}
 		}
 	}
 
-	void init_move(int sl, std::vector<uint64> &blocker, std::vector<uint64> &attack)
+	void init_attack(piece pc, const std::vector<bit64> &blocker, std::vector<bit64> &attack)
 	{
 		// generating all possible attacks from each square, considering the blocker boards
 
-		assert(sl == ROOK || sl == BISHOP);
-		assert(attack.size() == 0 || attack.size() == 102400);
-
-		for (int sq{ H1 }; sq <= A8; ++sq)
+		for (square sq{ h1 }; sq <= a8; sq += 1)
 		{
-			auto sq_bit{ 1ULL << sq };
+			bit64 sq_bit{ bit::set(sq) };
+			int permutations{ 1 << (64 - slider[pc][sq].shift) };
 
-			auto permutations{ 1 << (64 - slider[sl][sq].shift) };
 			for (int p{}; p < permutations; ++p)
 			{
-				uint64 new_attack{};
-				for (auto dir{ sl }; dir < 8; dir += 2)
+				bit64 new_attack{};
+				for (int dr{ pc ^ 1 }; dr < 8; dr += 2)
 				{
-					auto flood{ sq_bit };
-					auto stop{ ray[dir].boarder | blocker[slider[sl][sq].offset + p] };
+					bit64 ray{ sq_bit };
+					bit64 stop{ shift::dr[dr].boarder | blocker[slider[pc][sq].offset + p] };
 
-					while (!(flood & stop))
+					while (!(ray & stop))
 					{
-						bit::real_shift(flood, ray[dir].shift);
-						new_attack |= flood;
+						ray = bit::shift(ray, shift::dr[dr].shift);
+						new_attack |= ray;
 					}
 				}
 				attack.push_back(new_attack);
-
-				assert(attack.size() - 1 == slider[sl][sq].offset + p);
+				verify((int)attack.size() - 1 == slider[pc][sq].offset + p);
 			}
 		}
 	}
 
-	void init_magic(int sl, std::vector<uint64> &blocker, std::vector<uint64> &attack)
+	void init_magic(piece pc, const std::vector<bit64> &blocker, const std::vector<bit64> &attack)
 	{
 		// finding fitting magic numbers
-		// credits for the algorithm go to Tord Romstad:
+		// idea from Tord Romstad:
 		// https://www.chessprogramming.org/Looking_for_Magics
 
-		assert(sl == ROOK || sl == BISHOP);
-		rand_64xor rand_gen;
+		rand_64xor rand_gen{};
 		bool fail{};
 
-		for (int sq{ H1 }; sq <= A8; ++sq)
+		for (square i{ h1 }; i <= a8; i += 1)
 		{
-			auto permutations{ 1 << (64 - slider[sl][sq].shift) };
-			assert(permutations <= 4096);
-
-			std::vector<uint64> save_attack;
-			rand_gen.new_magic_seed(sq);
+			auto &sq{ slider[pc][i] };
+			rand_gen.new_seed(i);
+			
+			int permutations{ 1 << (64 - sq.shift) };
+			verify(permutations >= (1 << 5) && permutations <= (1 << 12));
+			
 			do
 			{
-				do slider[sl][sq].magic = rand_gen.sparse64();
-				while (bit::popcnt((slider[sl][sq].mask * slider[sl][sq].magic) & 0xff00000000000000) < 6);
+				do sq.magic = rand_gen.sparse64();
+				while (bit::popcnt((sq.mask * sq.magic) & 0xff00000000000000) < 6);
 
 				fail = false;
-				save_attack.clear();
-				save_attack.resize(permutations);
+				std::vector<bit64> save_attack(permutations);
 
 				for (int p{}; !fail && p < permutations; ++p)
 				{
-					auto index{ static_cast<int>(blocker[slider[sl][sq].offset + p] * slider[sl][sq].magic >> slider[sl][sq].shift) };
-					assert(index <= permutations);
+					int index{ static_cast<int>(blocker[sq.offset + p] * sq.magic >> sq.shift) };
+					verify(index <= permutations);
 
 					if (!save_attack[index])
-						 save_attack[index] = attack[slider[sl][sq].offset + p];
+						 save_attack[index] = attack[sq.offset + p];
 
-					else if (save_attack[index] != attack[slider[sl][sq].offset + p])
+					else if (save_attack[index] != attack[sq.offset + p])
 					{
 						fail = true;
 						break;
@@ -177,47 +172,48 @@ namespace magic
 		}
 	}
 
-	void init_index(int sl, std::vector<uint64> &blocker, std::vector<uint64> &attack_temp)
+	void init_index(piece pc, std::vector<bit64> &blocker, std::vector<bit64> &attack_temp)
 	{
 		// using the created magic numbers to index the attack table
+		// if the BMI2 instruction PEXT is enabled, using it instead for faster performance
 
-		assert(sl == ROOK || sl == BISHOP);
-
-		for (int sq{ H1 }; sq <= A8; ++sq)
+		for (auto &sq : slider[pc])
 		{
-			auto permutations{ 1 << (64 - slider[sl][sq].shift) };
+			int permutations{ 1 << (64 - sq.shift) };
 			for (int p{}; p < permutations; ++p)
 			{
-				attack_table[static_cast<uint32>(slider[sl][sq].offset
-					+ (blocker[slider[sl][sq].offset + p] * slider[sl][sq].magic >> slider[sl][sq].shift))]
-					= attack_temp[slider[sl][sq].offset + p];
+#if defined(PEXT)
+				uint64 index{ _pext_u64(blocker[sq.offset + p], sq.mask) };
+#else
+				uint64 index{ blocker[sq.offset + p] * sq.magic >> sq.shift };
+#endif
+				attack_table[sq.offset + (int)index] = attack_temp[sq.offset + p];
 			}
 		}
 	}
 }
 
-void magic::index_table()
+void magic::init_table()
 {
-	// indexing the attack table
+	// indexing the attack tables for bishops and rooks
 	// starting by initializing temporary attack-tables & blocker-tables
 
-	attack_table.clear();
-	attack_table.resize(table_size);
+	attack_table.resize(size::table);
 
-	std::vector<uint64> attack_temp;
-	attack_temp.reserve(table_size);
+	std::vector<bit64> attack_temp{};
+	attack_temp.reserve(size::table);
 
-	std::vector<uint64> blocker;
-	blocker.reserve(table_size);
+	std::vector<bit64> blocker{};
+	blocker.reserve(size::table);
 
 	// generating magic numbers & indexing their final attack tables
 
-	for (int sl{ ROOK }; sl <= BISHOP; ++sl)
+	for (piece pc : { bishop, rook })
 	{
-		init_mask(sl);
-		init_blocker(sl, blocker);
-		init_move( sl, blocker, attack_temp);
-		init_magic(sl, blocker, attack_temp);
-		init_index(sl, blocker, attack_temp);
+		init_mask(pc);
+		init_blocker(pc, blocker);
+		init_attack(pc, blocker, attack_temp);
+		init_magic(pc, blocker, attack_temp);
+		init_index(pc, blocker, attack_temp);
 	}
 }

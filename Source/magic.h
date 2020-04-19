@@ -1,6 +1,5 @@
 /*
-  Monolith 1.0  Copyright (C) 2017-2018 Jonas Mayr
-
+  Monolith 2 Copyright (C) 2017-2020 Jonas Mayr
   This file is part of Monolith.
 
   Monolith is free software: you can redistribute it and/or modify
@@ -20,45 +19,34 @@
 
 #pragma once
 
+#include "types.h"
 #include "main.h"
 
 // setting up the magic index function for fast move generation of sliding pieces
-// the tables are indexed using the "fancy" approach
+// the tables are indexed using the "fancy" approach:
+// https://www.chessprogramming.org/Magic_Bitboards
 
 namespace magic
 {
-	// each square gets an entry
+	// to be calculated for each square:
+	// attack mask, magic indexing number, offset of the array, shift of the magic key
 
-	struct square_entry
+	struct sq_entry
 	{
-		uint64 mask;
-		uint64 magic;
+		bit64 mask;
+		bit64 magic;
 		int offset;
 		int shift;
 	};
 
-	// confining the attacking rays depending on piece and direction
+	enum piece { bishop, rook };
 
-	struct pattern
-	{
-		int shift;
-		uint64 boarder;
-	};
+	// tables with all information for magic move generation after initialization
 
-	constexpr pattern ray[]
-	{
-		{  8, 0xff00000000000000 }, {  7, 0xff01010101010101 },
-		{ 63, 0x0101010101010101 }, { 55, 0x01010101010101ff },
-		{ 56, 0x00000000000000ff }, { 57, 0x80808080808080ff },
-		{  1, 0x8080808080808080 }, {  9, 0xff80808080808080 }
-	};
+	extern std::array<std::array<sq_entry, 64>, 2> slider;
+	extern std::vector<bit64> attack_table;
 
-	// tables that are holding all magic information after the initialization
+	// indexing the magic number attack tables
 
-	extern square_entry slider[2][64];
-	extern std::vector<uint64> attack_table;
-
-	// indexing magic number attack tables
-
-	void index_table();
+	void init_table();
 }

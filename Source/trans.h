@@ -1,6 +1,5 @@
 /*
-  Monolith 1.0  Copyright (C) 2017-2018 Jonas Mayr
-
+  Monolith 2 Copyright (C) 2017-2020 Jonas Mayr
   This file is part of Monolith.
 
   Monolith is free software: you can redistribute it and/or modify
@@ -20,7 +19,8 @@
 
 #pragma once
 
-#include "position.h"
+#include "move.h"
+#include "types.h"
 #include "main.h"
 
 // managing the main transposition hash table
@@ -28,56 +28,43 @@
 class trans
 {
 private:
-
 	struct hash
 	{
-		uint64 key;
+		key64 key;
 		uint64 data;
 	};
 
-	static_assert(sizeof(hash) == 16, "tt entry != 16 bytes");
+	static_assert(sizeof(hash) == 16);
 
-	// actual hash table & table properties
+	// hash table & table properties
 
-	static hash* table;
+	struct std_free { void operator()(hash* t) { std::free(t); } };
+	static std::unique_ptr<hash[], std_free> table;
 
 	static constexpr int slots{ 4 };
 	static uint64 size;
 	static uint64 mask;
 
-	void erase();
-
 public:
-
-	static uint64 hash_hits;
-
-	trans(uint64 size)
-	{
-		erase();
-		create(size);
-	}
-
-	~trans() { erase(); }
-
-	// type to store probing results
+	// storing and probing
 
 	struct entry
 	{
-		uint32 move;
-		int score;
-		int bound;
-		int depth;
+		move  mv{};
+		score sc{ score::none };
+		bound bd{ bound::none };
+		depth dt{};
+
+		bool probe(const key64& key, depth curr_dt);
 	};
+
+	static hash* get_entry(const key64& key);
+	static void store(const key64& key, move mv, score sc, bound bd, depth remaining_dt, depth curr_dt);
 
 	// manipulating the table
 
-	int create(uint64 size);
+	static std::size_t create(std::size_t megabytes);
 	void clear();
-
-	static uint64 to_key(const board &pos);
-
-	static void store(uint64 &key, uint32 move, int score, int bound, int depth, int curr_depth);
-	static bool probe(uint64 &key, entry &node, int depth, int curr_depth);
-
+	
 	static int hashfull();
 };

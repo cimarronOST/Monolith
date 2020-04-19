@@ -1,6 +1,5 @@
 /*
-  Monolith 1.0  Copyright (C) 2017-2018 Jonas Mayr
-
+  Monolith 2 Copyright (C) 2017-2020 Jonas Mayr
   This file is part of Monolith.
 
   Monolith is free software: you can redistribute it and/or modify
@@ -18,31 +17,42 @@
 */
 
 
-#include "eval.h"
-#include "zobrist.h"
+#include "search.h"
+#include "trans.h"
 #include "syzygy.h"
-#include "stream.h"
-#include "attack.h"
+#include "eval.h"
+#include "misc.h"
 #include "magic.h"
+#include "bit.h"
+#include "zobrist.h"
 #include "uci.h"
 #include "main.h"
+
+void verify_expr(const bool& condition, const char* expression, const char* file, unsigned long line)
+{
+    // if the expression cannot be verified, the output with information about the failed expression
+    // is redirected to a log file after the UCI command 'setoption Log value true'
+
+    if (!(!condition))
+        return;
+    std::cout << "verification '" << expression << "' failed in file " << file << " line " << line << std::endl;
+    abort();
+}
 
 int main(int, char* argv[])
 {
 	std::cout << "Monolith " << uci::version_number << std::endl;
 
-	// initializing
+	// initializing everything before entering the communication loop
 
-	filestream::set_path(argv);
-	filestream::open();
-	uci::open_book();
-	magic::index_table();
-	attack::fill_tables();
+	bit::init_masks();
 	zobrist::init_keys();
-	syzygy::init_tablebases(uci::syzygy.path);
-	eval::fill_tables();
-
-	// starting the UCI communication protocol loop
+    trans::create(uci::hash_size);
+	magic::init_table();
+	filesystem::init_path(argv);
+	eval::mirror_tables();
+    search::init_tables();
+	syzygy::init_tb(uci::syzygy.path);
 
 	uci::loop();
 	return 0;

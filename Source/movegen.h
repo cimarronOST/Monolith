@@ -1,6 +1,5 @@
 /*
-  Monolith 1.0  Copyright (C) 2017-2018 Jonas Mayr
-
+  Monolith 2 Copyright (C) 2017-2020 Jonas Mayr
   This file is part of Monolith.
 
   Monolith is free software: you can redistribute it and/or modify
@@ -20,81 +19,82 @@
 
 #pragma once
 
+#include "move.h"
 #include "attack.h"
-#include "position.h"
+#include "bit.h"
+#include "board.h"
+#include "types.h"
 #include "main.h"
 
-// staged move generation, can generate both legal and pseudolegal moves
+// disable Intel compiler warnings
+// explicitly instantiating template functions more than once
 
-class gen
+#if defined(__INTEL_COMPILER)
+#pragma warning(disable : 803)
+#endif
+
+// generating moves
+// generation is staged and can be legal or pseudo-legal
+
+template<mode md> class gen
 {
 public:
+	// fixed copy of the board position
 
-	board pos;
+	const board pos;
 
-	gen(board &position, gen_mode mode) : pos(position)
+	// constructor decides whether generation will be legal or pseudo-legal
+
+	gen(const board& fixed_pos) : pos{ fixed_pos }
 	{
-		if (mode == LEGAL)
+		if constexpr (md == mode::legal)
 		{
-			attack::pins(pos, pos.turn, pos.turn, pin);
+			pin.find(pos, pos.cl, pos.cl);
 			evasions = attack::evasions(pos);
 		}
-		else
-		{
-			assert(mode == PSEUDO);
-			assert(evasions == std::numeric_limits<uint64>::max());
-		}
+		if constexpr (md == mode::pseudolegal)
+			verify(evasions == bit::max);
 	}
 
-private:
+	// list in which all generated moves are stored
 
-	// speeding up minor piece check generation & holding information for legal move-generation
-
-	uint64 king_color{ std::numeric_limits<uint64>::max() };
-	uint64 evasions{   std::numeric_limits<uint64>::max() };
-	uint64 pin[64]{};
-
-public:
-
-	// movelist
-
-	uint32 move[lim::moves]{};
-	int moves{};
-	struct move_count
+	move_list mv{};
+	struct count_moves
 	{
+		int mv;
 		int capture;
 		int promo;
 		int loosing;
-	} count{};
-
-	bool find(uint32 move);
-	bool empty() const;
-
-	// generating staged moves as commanded by movepick
-
-	void gen_all();
-	void gen_searchmoves(std::vector<uint32> &searchmoves);
-
-	int gen_hash(uint32 &hash_move);
-	template<promo_mode promo> int gen_tactical();
-	int gen_killer(uint32 killer[], uint32 counter);
-	int gen_quiet();
-	int gen_check();
-
-	int restore_loosing();
-	int restore_deferred(uint32 deferred[]);
+		int duplicate;
+	} cnt{};
+	bool empty() const { return !cnt.mv; }
 
 private:
+	// holding information for legal move-generation 
 
+	bit64 evasions{ bit::max };
+	attack::pin_mv pin{};
+
+public:
+	// generating staged moves as commanded by movepick
+
+	int gen_all();
+	int gen_searchmoves(const std::vector<move>& moves);
+	int gen_hash(move& hash_mv);
+	int gen_capture();
+	int gen_promo(stage st);
+	int gen_killer(const killer_list& killer, move counter);
+	int gen_quiet();
+
+	// restoring previously generated moves
+
+	int restore_loosing();
+	int restore_deferred(const move_list& deferred, int deferred_cnt);
+
+private:
 	// actual move generating functions
 
-	template<promo_mode promo> void pawn_promo();
-	void pawn_capture();
-	void pawn_quiet(uint64 mask);
-
-	void knight(uint64 mask);
-	void bishop(uint64 mask);
-	void rook(uint64 mask);
-	void queen(uint64 mask);
-	void king(uint64 mask);
+	template<stage st> void  pawns();
+	template<stage st> void pieces(std::initializer_list<piece> pc);
+	void castle();
 };

@@ -1,6 +1,5 @@
 /*
-  Monolith 1.0  Copyright (C) 2017-2018 Jonas Mayr
-
+  Monolith 2 Copyright (C) 2017-2020 Jonas Mayr
   This file is part of Monolith.
 
   Monolith is free software: you can redistribute it and/or modify
@@ -18,14 +17,15 @@
 */
 
 
-#pragma once
-
+#include "board.h"
+#include "types.h"
 #include "main.h"
 
-// small benchmark framework containing sets of test positions
+// doing benchmarks to test the engine for correctness and speed
 
 namespace bench
 {
-	void  perft(std::string mode);
-	void search(std::string &filename, int64 &time);
+	template<mode md>
+	void perft(board pos, depth dt_max);
+	void search(const std::string &filename, const milliseconds &time);
 }

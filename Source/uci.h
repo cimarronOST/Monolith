@@ -1,6 +1,5 @@
 /*
-  Monolith 1.0  Copyright (C) 2017-2018 Jonas Mayr
-
+  Monolith 2 Copyright (C) 2017-2020 Jonas Mayr
   This file is part of Monolith.
 
   Monolith is free software: you can redistribute it and/or modify
@@ -20,68 +19,71 @@
 
 #pragma once
 
-#include <sstream>
-
-#include "position.h"
+#include "move.h"
+#include "thread.h"
+#include "polyglot.h"
+#include "trans.h"
+#include "types.h"
 #include "main.h"
 
-// handling the universal chess interface communication protocol
+// interface of the Universal Chess Interface (UCI) communication protocol
 
 namespace uci
 {
-	// options & parameters
+	// fixed parameters
 
-	const std::string version_number{ "1.0" };
+	const std::string version_number{ "2" };
 	const std::string startpos{ "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1" };
 
+	// alterable parameters
+
+	extern bool use_abdada;
 	extern bool chess960;
-
-	extern int move_count;
-	extern int move_offset;
-	extern uint64 quiet_hash[];
-
+	extern bool log;
+	extern bool stop;
+	extern bool ponder;
+	extern bool infinite;
 	extern bool use_book;
-	extern bool bookmove;
+	extern book bk;
 
-	extern int hash_size;
+	extern int thread_cnt;
+	extern int mv_cnt;
+	extern int mv_offset;
+	extern std::array<key64, 256> game_hash;
 
-	extern int thread_count;
+	extern std::size_t multipv;
+	extern std::size_t hash_size;
+	extern milliseconds overhead;
+
+	extern struct search_limit
+	{
+		std::vector<move> searchmoves;
+		milliseconds movetime;
+		int64 nodes;
+		depth dt;
+		depth mate;
+		void set_infinite();
+	} limit;
 
 	extern struct syzygy_settings
 	{
 		std::string path;
-		int depth;
+		depth dt;
 		int pieces;
-		bool rule50;
 	} syzygy;
 
-	extern bool stop;
-	extern bool ponder;
-	extern bool infinite;
+	// main transposition hash-table
 
-	extern int contempt[2];
-	extern int multipv;
+	extern trans hash_table;
 
-	extern struct search_limit
-	{
-		std::vector<uint32> moves;
-		int64 nodes;
-		int depth;
-		int mate;
-	} limit;
-
-	extern int overhead;
-
-	// connecting to PolyGlot opening books
-
-	void open_book();
-
-	// resetting the game status
-
-	void set_position(board &pos, std::string fen);
-	void new_game(board &pos);
-
-	// starting the main communication loop
+	// communication loop
 
 	void loop();
+
+	// output of current search information
+
+	void info_iteration(sthread& thread, int mv_cnt);
+	void info_bound(sthread& thread, int pv_n, score sc, bound bd);
+	void info_currmove(sthread& thread, int pv_n, move mv, int mv_n);
+	void info_bestmove(std::tuple<move, move> mv);
 }

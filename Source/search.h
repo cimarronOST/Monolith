@@ -1,6 +1,5 @@
 /*
-  Monolith 1.0  Copyright (C) 2017-2018 Jonas Mayr
-
+  Monolith 2 Copyright (C) 2017-2020 Jonas Mayr
   This file is part of Monolith.
 
   Monolith is free software: you can redistribute it and/or modify
@@ -20,26 +19,23 @@
 
 #pragma once
 
+#include "time.h"
 #include "thread.h"
-#include "position.h"
+#include "board.h"
+#include "types.h"
 #include "main.h"
 
-// analyzing the search & integrating a testing interface for debugging
-
-namespace analysis
-{
-	void reset();
-	void summary();
-
-	// doing a performance- and correctness-test of the move-generator 
-
-	void perft(board &pos, int depth, const gen_mode mode);
-}
-
-// searching for the best move, this is the heart of the engine
+// searching for the best move
+// all Elo estimates in the comments were done by removing the feature and doing 750 games with very fast time control
+// therefore they are not very accurate
 
 namespace search
 {
-	void reset();
-	void start(thread_pool &threads, int64 movetime);
+	struct p_variation { std::array<move, lim::dt> mv; int cnt; };
+	extern int64 bench;
+
+    void init_tables();
+
+    score qsearch(sthread& thread, board& pos, p_variation& pv, bool in_check, depth curr_dt, depth dt, score alpha, score beta);
+    void start(thread_pool& threads, timemanage::move_time movetime);
 }

@@ -1,6 +1,5 @@
 /*
-  Monolith 1.0  Copyright (C) 2017-2018 Jonas Mayr
-
+  Monolith 2 Copyright (C) 2017-2020 Jonas Mayr
   This file is part of Monolith.
 
   Monolith is free software: you can redistribute it and/or modify
@@ -18,303 +17,236 @@
 */
 
 
-// this file is based on PolyGlot by Fabien Letouzey:
-// http://hgm.nubati.net/cgi-bin/gitweb.cgi?p=polyglot.git
+/*
+  probing PolyGlot opening books
+  all credits go to Fabien Letouzey for creating the book format
+  http://hgm.nubati.net/cgi-bin/gitweb.cgi?p=polyglot.git
+  the probing code has been modified to conform with the engine
+*/
 
-#include <fstream>
-
-#include "utilities.h"
-#include "move.h"
 #include "bit.h"
-#include "attack.h"
-#include "zobrist.h"
-#include "stream.h"
 #include "polyglot.h"
-
-std::string book::name{ "monolith.bin" };
-
-namespace
-{
-	static_assert(PROMO_KNIGHT == 12, "promotion flag");
-	static_assert(PROMO_QUEEN  == 15, "promotion flag");
-
-	constexpr int castling_flag[]{ CASTLE_SHORT, CASTLE_LONG };
-
-	std::ifstream stream;
-	int book_size{};
-	rand_32 rand_gen;
-}
-
-namespace move
-{
-	bool legal(board pos, uint32 move)
-	{
-		// checking for full legality of the book move
-
-		if (!pos.pseudolegal(move))
-			return false;
-
-		pos.new_move(move);
-		return attack::check(pos, pos.xturn, pos.pieces[KINGS] & pos.side[pos.xturn]);
-	}
-}
 
 namespace move16
 {
-	// decoding the move coordinates of the book entry
+	// recoding the move coordinates of the book entry
 
-	int sq1(uint16 move16)
+	square sq1(uint16 move16)
 	{
-		return 7 - ((move16 & 0x1c0) >> 6) + ((move16 & 0xe00) >> 6);
+		return a1 - ((move16 & 0x1c0) >> 6) + ((move16 & 0xe00) >> 6);
 	}
 
-	int sq2(uint16 move16)
+	square sq2(uint16 move16)
 	{
-		return 7 - (move16 & 0x7) + (move16 & 0x38);
+		return a1 - (move16 & 0x7) + (move16 & 0x38);
 	}
 
-	int promo(uint16 move16)
+	int promo_pc(uint16 move16)
 	{
 		return (move16 & 0x7000) >> 12;
 	}
 
-	uint32 recode(uint16 move16, const board &pos)
+	move recode(uint16 move16, const board &pos)
 	{
-		// recoding <move16> to be consistent with the internal board representation
+		// recoding move16 to be consistent with the internal board representation
 
-		auto sq1{ move16::sq1(move16) };
-		auto sq2{ move16::sq2(move16) };
-		auto turn{ pos.turn };
+		square sq1{ move16::sq1(move16) };
+		square sq2{ move16::sq2(move16) };
+		color  cl{ pos.cl };
+		piece  pc{ pos.piece_on[sq1] };
+		piece  vc{ pos.piece_on[sq2] };
+		flag   fl{ no_flag };
 
-		int flag{ NONE };
-		int piece{ pos.piece[sq1] };
-		int victim{ pos.piece[sq2] };
-
-		if (piece == PAWNS)
+		if (pc == pawn)
 		{
 			// setting en-passant flag
 
-			if (victim == NONE && std::abs(sq1 - sq2) % 8 != 0)
+			if (vc == no_piece && std::abs(sq1 - sq2) % 8 != 0)
 			{
-				flag = ENPASSANT;
-				victim = PAWNS;
+				fl = enpassant;
+				vc = pawn;
 			}
-
-			// setting double-push flag
-
-			if (std::abs(sq1 - sq2) == 16)
-				flag = DOUBLEPUSH;
 
 			// setting promotion flag
 
-			auto promo{ move16::promo(move16) };
-			flag = { promo ? 11 + promo : flag };
+			int promo{ move16::promo_pc(move16) };
+			fl = promo ? flag(3 + promo) : fl;
 		}
 
 		// setting castling flag
 
-		else if (piece == KINGS && ((1ULL << sq2) & pos.side[turn]))
+		else if (pc == king && (bit::set(sq2) & pos.side[cl]))
 		{
-			assert(victim == ROOKS);
-			victim = NONE;
-			flag = castling_flag[sq1 > sq2];
+			verify(vc == rook);
+			vc = no_piece;
+			fl = sq1 > sq2 ? castle_east : castle_west;
 		}
 
-		return move::encode(sq1, sq2, flag, piece, victim, turn);
+		return move{ sq1, sq2, pc, vc, cl, fl };
 	}
 }
 
-namespace data
+template uint64 book::read_int<uint64>();
+template uint16 book::read_int<uint16>();
+
+template<typename uint> uint book::read_int()
 {
-	template<typename uint>
-	uint read_int()
-	{
-		// extracting data from the book
+	// extracting data from the book
 
-		char buf[sizeof(uint)];
-		stream.read(buf, sizeof(uint));
-		assert(stream.good());
+	char buf[sizeof(uint)]{};
+	stream.read(buf, sizeof(uint));
+	verify(stream.good());
 
-		uint assembly{};
-		for (auto &b : buf)
-			assembly = (assembly << 8) | static_cast<uint8>(b);
-		return assembly;
-	}
+	uint assembly{};
+	for (auto& b : buf)
+		assembly = (assembly << 8) | static_cast<uint8>(b);
+	return assembly;
 }
 
-namespace book
+void book::read_entry(entry& e, int index)
 {
-	struct book_entry
-	{
-		uint64 key;
-		uint16 move;
-		uint16 count;
-		uint16 n;
-		uint16 sum;
-	};
+	// retrieving the book entry
 
-	void read_entry(book_entry &entry, int index)
-	{
-		// retrieving the book entry
+	verify(index >= 0 && index < size);
+	verify(stream.is_open());
+	stream.seekg(index * 16, std::ios_base::beg);
+	verify(stream.good());
 
-		assert(index >= 0 && index < book_size);
-		assert(stream.is_open());
-
-		stream.seekg(index * 16, std::ios_base::beg);
-		assert(stream.good());
-
-		entry.key = data::read_int<uint64>();
-		entry.move = data::read_int<uint16>();
-		entry.count = data::read_int<uint16>();
-		entry.n = data::read_int<uint16>();
-		entry.sum = data::read_int<uint16>();
-	}
-
-	int find_key(uint64 &key)
-	{
-		// locating the leftmost matching book entry through a binary search
-
-		int left{};
-		int right{ book_size - 1 };
-		int mid{};
-		book_entry entry;
-
-		assert(left <= right);
-		while (left < right)
-		{
-			mid = (left + right) / 2;
-			assert(mid >= left && mid < right);
-
-			read_entry(entry, mid);
-
-			if (key <= entry.key)
-				right = mid;
-			else
-				left = mid + 1;
-		}
-
-		assert(left == right);
-		read_entry(entry, left);
-		return (entry.key == key) ? left : book_size;
-	}
+	e = entry{ read_int<key64>(), read_int<uint16>(), read_int<uint16>(), read_int<uint16>(), read_int<uint16>() };
 }
 
-bool book::open()
+int book::find_key(const key64& key)
 {
-	// opening the opening book file
+	// locating the leftmost matching book entry through a binary search
+
+	int left{}, right{ size - 1 }, mid{};
+	entry e{};
+
+	verify(left <= right);
+	while (left < right)
+	{
+		mid = (left + right) / 2;
+		verify(mid >= left && mid < right);
+		read_entry(e, mid);
+
+		if (key <= e.key)
+			right = mid;
+		else
+			left = mid + 1;
+	}
+
+	verify(left == right);
+	read_entry(e, left);
+	return (e.key == key) ? left : size;
+}
+
+bool book::open(std::string file)
+{
+	// opening the book file
 
 	if (stream.is_open())
 		stream.close();
 
-	std::string path{ filestream::fullpath + name };
-
+	std::string path{ filesystem::path + file };
 	stream.open(path, std::ifstream::in | std::ifstream::binary);
+
 	if (!stream.is_open())
 		return false;
 
 	stream.seekg(0, std::ios::end);
-	book_size = static_cast<int>(stream.tellg()) / 16;
-	if (book_size == 0)
+	size = int(stream.tellg()) / 16;
+	if (size == 0)
 		return false;
 
 	stream.seekg(0, std::ios::beg);
-	if (!stream.good())
-		return false;
-
-	return true;
+	hit = stream.good();
+	return hit;
 }
 
-uint32 book::get_move(board &pos)
+move book::get_move(const board &pos)
 {
 	// trying to find a book move
 
-	if (stream.is_open() && book_size != 0)
+	if (!hit || !stream.is_open() || size == 0)
+		return move{};
+
+	int sc{},  best_sc{};
+	int cnt{}, best_cnt{};
+
+	key64 key{ polyglot::position_key(pos) };
+	entry e{};
+
+	for (int i{ find_key(key) }; i < size; ++cnt, ++i)
 	{
-		int score{}, best_score{};
-		int count{}, best_count{};
+		read_entry(e, i);
+		if (e.key != key) break;
 
-		uint64 key{ polyglot::to_key(pos) };
-		book_entry entry{};
+		// choosing a move randomly, but trending to the best ones
 
-		for (auto i{ find_key(key) }; i < book_size; ++count, ++i)
-		{
-			read_entry(entry, i);
-			if (entry.key != key) break;
+		sc = e.cnt;
+		best_sc += sc;
+		if (rand_gen.rand32(best_sc) < sc)
+			best_cnt = cnt;
 
-			// choosing a move randomly, but trending to the best ones
-
-			score = entry.count;
-			best_score += score;
-			if (rand_gen.rand32(best_score) < score)
-				best_count = count;
-			assert(score > 0 && entry.move != 0);
-		}
-
-		if (count)
-		{
-			// recoding & checking & returning the located move
-
-			read_entry(entry, find_key(key) + best_count);
-			assert(key == entry.key);
-
-			auto best_move{ move16::recode(entry.move, pos) };
-			if (move::legal(pos, best_move))
-				return best_move;
-		}
+		verify(sc > 0 && e.mv != 0);
 	}
+	if (cnt)
+	{
+		// recoding, checking & returning the located move
 
-	// no legal move has been found
+		read_entry(e, find_key(key) + best_cnt);
+		verify(key == e.key);
 
-	return MOVE_NONE;
+		move bestmove{ move16::recode(e.mv, pos) };
+		if (pos.legal(bestmove))
+			return bestmove;
+	}
+	return move{};
 }
 
-namespace
-{
-	constexpr int castling_idx[]{ 0, 2, 1, 3 };
-}
-
-uint64 polyglot::to_key(const board &pos)
+key64 polyglot::position_key(const board &pos)
 {
 	// generating the PolyGlot hash key of the current position
 
-	uint64 key{};
+	key64 key{};
 
 	// considering all pieces
 
-	for (int col{ WHITE }; col <= BLACK; ++col)
+	for (color cl : { white, black })
 	{
-		auto xcol{ col ^ 1 };
-		uint64 pieces{ pos.side[col] };
-		while (pieces)
+		color  cl_x{ cl ^ 1 };
+		bit64  pc{ pos.side[cl] };
+		while (pc)
 		{
-			auto sq{ bit::scan(pieces) };
-			assert(pos.piece[sq] != NONE);
+			square sq{ bit::scan(pc) };
+			verify(pos.piece_on[sq] != no_piece);
 
-			key ^= polyglot::rand_key[(pos.piece[sq] * 2 + xcol) * 64 + (sq & 56) + 7 - index::file(sq)];
-			pieces &= pieces - 1;
+			key ^= key_pc[(pos.piece_on[sq] * 2 + cl_x) * 64 + type::sq_flip(sq)];
+			pc &= pc - 1;
 		}
 	}
 
 	// considering castling rights
 
-	for (auto i{ 0 }; i < 4; ++i)
-	{
-		if (pos.castling_right[i] != PROHIBITED)
-			key ^= polyglot::rand_key[zobrist::off.castling + castling_idx[i]];
-	}
+	for (color cl : {white, black})
+		for (flag fl : {castle_east, castle_west})
+		{
+			if (pos.castle_right[cl][fl] != prohibited)
+				key ^= key_castle[cl * 2 + fl];
+		}
 
 	// considering en-passant square
 
 	if (pos.ep_rear)
 	{
-		auto ep_idx{ bit::scan(pos.ep_rear) };
-		if (pos.pieces[PAWNS] & pos.side[pos.turn] & attack::king_map[ep_idx] & (bit::rank[R4] | bit::rank[R5]))
-			key ^= polyglot::rand_key[zobrist::off.ep + 7 - index::file(ep_idx)];
+		file fl_ep{ type::fl_of(bit::scan(pos.ep_rear)) };
+		if (pos.pieces[pawn] & pos.side[pos.cl] & bit::ep_adjacent[pos.cl_x][fl_ep])
+			key ^= key_ep[file_a - fl_ep];
 	}
 
 	// considering side to move
 
-	key ^= polyglot::rand_key[zobrist::off.turn] * pos.xturn;
+	key ^= key_cl * pos.cl_x;
 
 	return key;
 }

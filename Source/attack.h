@@ -1,6 +1,5 @@
 /*
-  Monolith 1.0  Copyright (C) 2017-2018 Jonas Mayr
-
+  Monolith 2 Copyright (C) 2017-2020 Jonas Mayr
   This file is part of Monolith.
 
   Monolith is free software: you can redistribute it and/or modify
@@ -20,39 +19,50 @@
 
 #pragma once
 
-#include "position.h"
+#include "board.h"
+#include "types.h"
 #include "main.h"
 
 // attacking functions using bitboards
 
 namespace attack
 {
-	// fixed rough value of pieces in centipawns
+	// pins are pieces that are pinned to the king by a slider
+	// they have to be computed only for legal move generation
 
-	constexpr int value[]{ 100, 325, 325, 500, 950, 10000, 0, 0 };
+	class pin_mv
+	{
+	private:
+		int pin_cnt{};
+		std::array<int8, 64> pin_lc{};
+		std::array<bit64, 9> pin{};
 
-	// pre-calculated attack bitboards
+	public:
+		bit64 operator[](square sq) const;
+		void find(const board &pos, color cl_king, color cl_piece);
+		void add(square sq, bit64 bb);
+	};
 
-	extern uint64 in_front[2][64];
-	extern uint64 slide_map[2][64];
-	extern uint64 knight_map[64];
-	extern uint64 king_map[64];
+	// rough value of all pieces in centipawn units
 
-	void fill_tables();
+	constexpr std::array<score, 7> value{ { score(85), score(350), score(350), score(575), score(1100), score(10000), score(0) } };
 
-	// detecting check & finding pins and evasion squares
+	// detecting check & finding evasions
+	// evasions have to be computed only for legal move generation
 
-	uint64 check(const board &pos, int turn, uint64 all_sq);
-	uint64 evasions(const board &pos);
-	void pins(const board &pos, int side_king, int side_pin, uint64 pin_moves[]);
+	bit64 check(const board &pos, color cl, bit64 mask);
+	bit64 evasions(const board &pos);
 
 	// generating attacks
 
-	uint64 by_piece(int piece, int sq, int side, const uint64 &occ);
-	template<sliding_type sl> uint64 by_slider(int sq, uint64 occ);
-	uint64 by_pawns(const board &pos, int turn);
-	
-	// doing a static exchange evaluation
+	bit64 by_piece(piece pc, square sq, color cl, const bit64 &occ);
+	template<piece pc>
+	bit64 by_slider(square sq, bit64 occ);
+	bit64 by_pawns(bit64 pawns, color cl);
+	bit64 sq(const board &pos, square sq, const bit64 &occ);
 
-	int see(const board &pos, uint32 move);
+	// static exchange evaluation
+
+	bool see_above(const board& pos, move new_mv, score margin);
+	bool escape(const board &pos, move new_mv);
 }

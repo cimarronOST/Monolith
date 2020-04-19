@@ -1,6 +1,5 @@
 #
-# Monolith 1.0  Copyright (C) 2017 Jonas Mayr
-#
+# Monolith 2 Copyright (C) 2017-2020 Jonas Mayr
 # This file is part of Monolith.
 #
 # Monolith is free software: you can redistribute it and/or modify
@@ -20,77 +19,85 @@
 
 # files
 
-EXE     = Monolith
-APPEND  =
-SOURCE := $(wildcard *.cpp)
+NAME   = Monolith
+SOURCE = attack.cpp bench.cpp bit.cpp board.cpp eval.cpp magic.cpp main.cpp \
+         misc.cpp move.cpp movegen.cpp movepick.cpp movesort.cpp polyglot.cpp \
+         random.cpp search.cpp syzygy.cpp texel.cpp thread.cpp time.cpp \
+         trans.cpp types.cpp uci.cpp zobrist.cpp
 
-# flags
+# basic flags
 
-MACROS   =
-WFLAGS   = -Wall -Wextra
-CXXFLAGS = -s -O2
-LDFLAGS  = -pthread
+CFLAGS = -std=c++17 -O3
+WFLAGS = -Wall -Wextra -Wpedantic
+LFLAGS = -pthread -s
 
-# operating system
+# targeted architecture
 
-ifneq ($(OS),Windows_NT)
-    OS = $(shell uname -s)
-    ifeq ($(OS),Linux)
-        CXXFLAGS += -flto
-    endif
-endif
-
-# architecture
-
-ifeq ($(ARCH),x64-pext)
-    APPEND    = _x64_pext
-    CXXFLAGS += -m64
-    MACROS   += -D PEXT -D POPCNT
-endif
-
-ifeq ($(ARCH),x64-popcnt)
-    APPEND    = _x64_popcnt
-    CXXFLAGS += -m64
-    MACROS   += -D POPCNT
+ifeq ($(ARCH),)
+    CFLAGS += -march=native
+    ARCH    = native
 endif
 
 ifeq ($(ARCH),x64)
-    APPEND    = _x64
-    CXXFLAGS += -m64
+    CFLAGS += -m64
+endif
+
+ifeq ($(ARCH),x64-popcnt)
+    CFLAGS += -m64 -msse3 -mpopcnt -DPOPCNT
+endif
+
+ifeq ($(ARCH),x64-pext)
+    CFLAGS += -m64 -msse3 -mpopcnt -DPOPCNT -mbmi2 -DPEXT
 endif
 
 ifeq ($(ARCH),x86)
-    APPEND    = _x86
-    CXXFLAGS += -m32
+    CFLAGS += -m32
 endif
 
-ifeq ($(ARCH),android)
-	APPEND    = _android
-	CXXFLAGS +=
+ifeq ($(ARCH),armv7)
+    CFLAGS += -m32 -march=armv7-a -mfloat-abi=softfp -mfpu=vfpv3-d16 -mthumb
 endif
 
-# compiler
+ifeq ($(ARCH),armv8)
+    CFLAGS += -m64 -march=armv8-a
+endif
+
+# targeted operating system
+
+OS = $(shell uname -s)
+
+ifneq ($(ARCH),native)
+    ANNEX = -$(ARCH)
+endif
+
+ifeq ($(ARCH),$(filter $(ARCH),armv7 armv8))
+    OS = Android
+endif
+
+ifeq ($(OS),Android)
+    CFLAGS += -pie -fPIE -fno-strict-overflow -fno-strict-aliasing -ffunction-sections -fdata-sections -flto
+    LFLAGS += -Wl,-pie -Wl,--gc-sections -static-libstdc++
+endif
+
+ifeq ($(OS),Linux)
+    CFLAGS += -flto
+endif
+
+ifneq ($(OS),Linux)
+ifneq ($(OS),Android)
+    CFLAGS += -static
+    ANNEX   = -$(ARCH).exe
+endif
+endif
+
+# compiler specific additions
 
 ifeq ($(COMP),)
-    COMP = clang
+    COMP = g++
 endif
 
-ifeq ($(COMP),clang)
-    CXX       = clang++
-    CXXFLAGS += -std=c++11
-    WFLAGS   += -Wpedantic
-endif
-
-ifeq ($(COMP),gcc)
-    CXX       = g++
-    CXXFLAGS += -std=c++11
-    WFLAGS   += -Wpedantic
-endif
-
-ifeq ($(COMP),icc)
-	CXX       = icpc
-    CXXFLAGS += -std=c++14
-	WFLAGS   += -pedantic -w3 -diag-disable=remark
+ifeq ($(COMP),icpc)
+    WFLAGS += -pedantic -w3 -diag-disable=remark
 endif
 
 # targets
@@ -98,20 +105,17 @@ endif
 all: release
 
 release:
-	$(CXX) $(CXXFLAGS) $(WFLAGS) $(MACROS) -D NDEBUG $(SOURCE) $(LDFLAGS) -o $(EXE)$(APPEND)
+	$(COMP) $(CFLAGS) $(WFLAGS) -DNDEBUG $(SOURCE) $(LFLAGS) -o $(NAME)$(ANNEX)
 
-release_log:
-	$(CXX) $(CXXFLAGS) $(WFLAGS) $(MACROS) -D NDEBUG -D LOG $(SOURCE) $(LDFLAGS) -o $(EXE)$(APPEND)
+debug:
+	$(COMP) $(CFLAGS) $(WFLAGS) $(SOURCE) $(LFLAGS) -o $(NAME)$(ANNEX)
+
+debug_deep:
+	$(COMP) $(CFLAGS) $(WFLAGS) -DDEBUG_DEEP $(SOURCE) $(LFLAGS) -o $(NAME)$(ANNEX)
 
 tune:
-	$(CXX) $(CXXFLAGS) $(WFLAGS) $(MACROS) -D NDEBUG -D TUNE $(SOURCE) $(LDFLAGS) -o $(EXE)$(APPEND)
-
-debug_assert:
-	$(CXX) $(CXXFLAGS) $(WFLAGS) $(MACROS) $(SOURCE) $(LDFLAGS) -o $(EXE)
-
-debug_exp:
-	$(CXX) $(CXXFLAGS) $(WFLAGS) $(MACROS) -D DEBUG_EXP $(SOURCE) $(LDFLAGS) -o $(EXE)
+	$(COMP) $(CFLAGS) $(WFLAGS) -DNDEBUG -DTUNE $(SOURCE) $(LFLAGS) -o $(NAME)-tune-$(ANNEX)
 
 help:
-	@echo "make [target] [ARCH=architecture] [COMP=compiler]"
+	@echo "make release [ARCH=architecture] [COMP=compiler]"
 	@echo "see readme.md for more details"

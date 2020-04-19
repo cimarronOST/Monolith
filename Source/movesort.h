@@ -1,6 +1,5 @@
 /*
-  Monolith 1.0  Copyright (C) 2017-2018 Jonas Mayr
-
+  Monolith 2 Copyright (C) 2017-2020 Jonas Mayr
   This file is part of Monolith.
 
   Monolith is free software: you can redistribute it and/or modify
@@ -20,90 +19,119 @@
 
 #pragma once
 
+#include "move.h"
 #include "movegen.h"
-#include "position.h"
+#include "board.h"
+#include "types.h"
 #include "main.h"
+
+// handling the history tables
+
+class history
+{
+private:
+	// updating the history tables
+
+	void update_entry(int& entry, int weight);
+	void set_main(move mv, int weight);
+	void set_counter(move mv, move mv_prev, int weight);
+	void set_continuation(move mv, move mv_prev, int weight);
+
+public:
+	static constexpr int max{ 0x2aaaaaaa };
+
+	std::array<std::array<std::array<int, 64>, 6>, 2> main{};
+	std::array<std::array<std::array<std::array<int, 64>, 6>, 64>, 6> counter{};
+	std::array<std::array<std::array<std::array<int, 64>, 6>, 64>, 6> continuation{};
+
+	void update(move mv, move mv_prev1, move mv_prev2, const move_list& quiet_mv, int quiet_cnt, depth dt);
+	void clear();
+
+	// probing the history tables
+
+	struct sc
+	{
+		int main;
+		int counter;
+		int continuation;
+		void get(const history& hist, move mv, move mv_prev1, move mv_prev2);
+	};
+};
 
 // handling the sorting of root node moves
 
-class sort_root
+class rootsort
 {
 private:
-
 	board pos;
-	gen &list;
-
-	void sort_moves();
+	const gen<mode::legal>& list;
 
 public:
-
-	sort_root(gen &movelist) : pos(movelist.pos), list(movelist) {}
+	rootsort(const gen<mode::legal>& mvlist) : pos{ mvlist.pos }, list{ mvlist } {}
 
 	// storing all relevant information of each move
 
 	struct root_node
 	{
-		uint32 move;
-		int64 nodes;
-		int64 weight;
-		bool check;
-		bool skip;
-	} root[lim::moves]{};
+		move mv{};
+		int64 nodes{};
+		int64 weight{};
+		bool check{};
+		bool skip{};
+	};
+	std::array<root_node, lim::moves> root{};
 
 	// weighting the moves
 
+	void sort_moves();
 	void statical();
-	void statical_tb();
-	void dynamical(uint32 pv_move);
+	void dynamical(move pv_mv);
 
 	// handling multi-PV
 
-	void exclude_move(uint32 multipv_move);
+	void exclude_move(move multipv_mv);
 	void include_moves();
 };
 
-// assigning a weight to all moves in the alpha-beta search movelist for sorting purpose
+// assigning a weight to all moves for sorting purpose in the main alpha-beta search
 
-class sort
+template<mode md> class sort
 {
-public:
+private:
+	gen<md>& list;
 
+public:
 	// storing the assigned weights
 
-	int64 score[lim::moves]{};
+	std::array<uint32, lim::moves> sc{};
 
-	// parameter only used in the main alpha-beta move weighting
+	// parameters only used in the main alpha-beta move weighting
 
 	struct quiet_parameters
 	{
-		uint32 hash;
-		uint32 counter;
-		uint32 *killer;
-		int (*history)[6][64];
+		move hash;
+		move prev1;
+		move prev2;
+		move counter;
+		const killer_list* killer;
+		const history* hist;
 	} quiets{};
 
-	static constexpr int64 history_max{ 1ULL << 62 };
+	score see_margin{ score::none };
 
 private:
-
-	gen &list;
-
 	// weighting captures & promotions
 
-	int mvv_lva(uint32 move) const;
-	int mvv_lva_promo(uint32 move) const;
+	uint32 mvv_lva(move mv) const;
+	uint32 mvv_lva_promo(move mv) const;
 
-	bool loosing(board &pos, uint32 move) const;
-	bool previous(uint32 move) const;
+	bool previous(move mv) const;
 
 public:
-
 	// main search
 
-	sort(gen &movelist, uint32 tt_move, uint32 counter, uint32 killer[], int history[][6][64]) : list(movelist)
-	{
-		quiets = { tt_move, counter, killer, history };
-	}
+	sort(gen<md>& mvlist, move mv_tt, move mv_prev1, move mv_prev2, move counter, const killer_list& killer, const history& hist_tables)
+		: list{ mvlist }, quiets{ mv_tt, mv_prev1, mv_prev2, counter, &killer, &hist_tables } {}
 
 	void hash();
 	void tactical_see();
@@ -114,9 +142,8 @@ public:
 
 	// quiescence search
 
-	sort(gen &movelist) : list(movelist) {}
+	sort(gen<md> &mvlist) : list{ mvlist } {}
 
 	void tactical();
 	void evasion();
-	void check();
 };

@@ -1,6 +1,5 @@
 /*
-  Monolith 1.0  Copyright (C) 2017-2018 Jonas Mayr
-
+  Monolith 2 Copyright (C) 2017-2020 Jonas Mayr
   This file is part of Monolith.
 
   Monolith is free software: you can redistribute it and/or modify
@@ -18,375 +17,309 @@
 */
 
 
-#if defined(PEXT)
-  #include <immintrin.h>
-#endif
-
-#include "move.h"
-#include "utilities.h"
-#include "bit.h"
 #include "magic.h"
+#include "bit.h"
 #include "attack.h"
 
-uint64 attack::in_front[2][64]{};
-uint64 attack::slide_map[2][64]{};
-uint64 attack::knight_map[64]{};
-uint64 attack::king_map[64]{};
+#if defined(PEXT)
+#include <immintrin.h>
+#endif
 
-namespace attack
+namespace see
 {
-	// initializing tables at startup
+	// assisting functions for the Static Exchange Evaluation (SEE)
 
-	void init_slide(int sq, uint64 &sq_bit, int sl)
-	{
-		assert(sl == ROOK || sl == BISHOP);
-
-		for (int dir{ sl }; dir < 8; dir += 2)
-		{
-			uint64 flood{ sq_bit };
-			while (!(flood & magic::ray[dir].boarder))
-			{
-				bit::real_shift(flood, magic::ray[dir].shift);
-				slide_map[sl][sq] |= flood;
-			}
-		}
-	}
-
-	void init_king(int sq, uint64 &sq_bit)
-	{
-		for (auto &ray : magic::ray)
-			king_map[sq] |= sq_bit & ray.boarder ? 0ULL : bit::shift(sq_bit, ray.shift);
-	}
-
-	void init_knight(int sq, uint64 &sq_bit)
-	{
-		static magic::pattern jump[]
-		{
-			{ 15, 0xffff010101010101 },{  6, 0xff03030303030303 },
-			{ 54, 0x03030303030303ff },{ 47, 0x010101010101ffff },
-			{ 49, 0x808080808080ffff },{ 58, 0xc0c0c0c0c0c0c0ff },
-			{ 10, 0xffc0c0c0c0c0c0c0 },{ 17, 0xffff808080808080 }
-		};
-
-		for (auto &j : jump)
-			knight_map[sq] |= sq_bit & j.boarder ? 0ULL : bit::shift(sq_bit, j.shift);
-	}
-
-	void init_in_front(int sq, uint64 &sq_bit)
-	{
-		in_front[BLACK][sq] =  (sq_bit - 1) & ~bit::rank[index::rank(sq)];
-		in_front[WHITE][sq] = ~(sq_bit - 1) & ~bit::rank[index::rank(sq)];
-	}
-
-	// assisting SEE
-
-	int sum_gain(int gain[], int depth)
-	{
-		// summing up the final exchange balance score
-
-		while (--depth)
-			gain[depth - 1] = -std::max(-gain[depth - 1], gain[depth]);
-		return gain[0];
-	}
-
-	uint64 least_valuable(const board &pos, uint64 set, int &piece)
+	std::tuple<bit64, piece> least_valuable(const board &pos, bit64 set)
 	{
 		// selecting the least valuable attacker of the set
 
-		for (auto &p : pos.pieces)
+		for (auto& p : pos.pieces)
 		{
 			if (p & set)
 			{
-				auto sq1{ bit::scan(p & set) };
-				piece = pos.piece[sq1];
-				return 1ULL << sq1;
+				square sq{ bit::scan(p & set) };
+				return std::make_tuple(bit::set(sq), pos.piece_on[sq]);
 			}
 		}
-		return 0ULL;
+		return std::make_tuple(0ULL, no_piece);
 	}
 
-	uint64 to_square(const board &pos, int sq, const uint64 &occ)
-	{
-		// finding all attacking pieces of a square
-
-		return (pos.pieces[PAWNS] & king_map[sq] & slide_map[BISHOP][sq] & pos.side[BLACK] & in_front[WHITE][sq])
-			|  (pos.pieces[PAWNS] & king_map[sq] & slide_map[BISHOP][sq] & pos.side[WHITE] & in_front[BLACK][sq])
-			|  (pos.pieces[KNIGHTS] & knight_map[sq])
-			| ((pos.pieces[BISHOPS] | pos.pieces[QUEENS]) & by_slider<BISHOP>(sq, occ))
-			| ((pos.pieces[ROOKS]   | pos.pieces[QUEENS]) & by_slider<ROOK>(sq, occ))
-			|  (pos.pieces[KINGS] & king_map[sq]);
-	}
-
-	uint64 add_xray_attacker(const board &pos, int sq, const uint64 &occ)
+	bit64 add_xray_attacker(const board& pos, square sq, const bit64& occ)
 	{
 		// adding uncovered x-ray attackers to the attacker-set
 
-		return ((by_slider<ROOK>(sq, occ) & (pos.pieces[ROOKS] | pos.pieces[QUEENS]))
-			| (by_slider<BISHOP>(sq, occ) & (pos.pieces[BISHOPS] | pos.pieces[QUEENS]))) & occ;
+		return occ & ((attack::by_slider<bishop>(sq, occ) & (pos.pieces[bishop] | pos.pieces[queen]))
+			        | (attack::by_slider<rook>(sq, occ)   & (pos.pieces[rook]   | pos.pieces[queen])));
 	}
 }
 
-void attack::fill_tables()
+
+bit64 attack::pin_mv::operator[](square sq) const
 {
-	// filling various attack tables, called at startup
+	// retrieving the move restriction of the pinned piece
 
-	for (int sq{ H1 }; sq <= A8; ++sq)
+	verify(pin[0] == 0ULL || pin[0] == bit::max);
+	return pin[pin_lc[sq]];
+}
+
+void attack::pin_mv::find(const board &pos, color cl_king, color cl_piece)
+{
+	// finding all pieces that are pinned to the king and defining their legal move zone
+	// pieces of cl_piece are pinned to the king of cl_king
+
+	color cl_enemy{ cl_king ^ 1 };
+	bit64 sq_king_bit{ pos.pieces[king] & pos.side[cl_king] };
+	bit64 dia_enemy{ pos.side[cl_enemy] & (pos.pieces[bishop] | pos.pieces[queen]) };
+	bit64 lin_enemy{ pos.side[cl_enemy] & (pos.pieces[rook] | pos.pieces[queen]) };
+
+	square sq_king{ pos.sq_king[cl_king] };
+	bit64 slider{ (dia_enemy & by_slider<bishop>(sq_king, dia_enemy)) | (lin_enemy & by_slider<rook>(sq_king, lin_enemy)) };
+
+	while (slider)
 	{
-		auto sq_bit{ 1ULL << sq };
-		init_slide(sq, sq_bit, ROOK);
-		init_slide(sq, sq_bit, BISHOP);
-		init_king(sq, sq_bit);
-		init_knight(sq, sq_bit);
-		init_in_front(sq, sq_bit);
+		// defining the ray between enemy slider and king
+
+		square sq_sl{ bit::scan(slider) };
+		bit64 ray{ bit::ray[sq_king][sq_sl] ^ sq_king_bit };
+		bit64 piece{ (ray ^ bit::set(sq_sl)) & pos.side[cl_piece] };
+
+		// allowing only moves of the piece inside the ray that stay inside the ray
+		// resulting masks get complemented (~) for easier use afterwards
+
+		if (bit::popcnt(ray & pos.side[both]) == 2 && piece)
+			add(bit::scan(piece), ~ray);
+
+		// if two pawns of different colors are in the ray between an attacking rook/queen and king,
+		// capturing each other en-passant also has to be prohibited
+
+		else if (pos.ep_rear
+			&& bit::popcnt(ray & pos.side[both]) == 3
+			&& (ray & pos.side[cl_king] & pos.pieces[pawn])
+			&& (ray & pos.side[cl_enemy] & pos.pieces[pawn]))
+		{
+			bit64 pc{ ray & pos.side[cl_piece] & pos.pieces[pawn] };
+			bit64 vc{ ray & pos.side[cl_piece ^ 1] & pos.pieces[pawn] };
+
+			if ((pc << 1 == vc || pc >> 1 == vc) && pos.ep_rear == bit::shift(vc, shift::push1x[cl_piece]))
+				add(bit::scan(pc), pos.ep_rear);
+		}
+		slider &= slider - 1;
 	}
 }
 
-uint64 attack::check(const board &pos, int turn, uint64 all_sq)
+void attack::pin_mv::add(square sq, bit64 bb)
+{
+	// creating an index for every pin to save memory
+
+	if (pin_lc[sq])
+	{
+		pin[pin_lc[sq]] |= bb;
+	}
+	else
+	{
+		pin_lc[sq] = ++pin_cnt;
+		verify(pin_cnt <= 8);
+		pin[pin_cnt] = bb;
+	}
+}
+
+bit64 attack::check(const board &pos, color cl, bit64 mask)
 {
 	// returning all squares that are not under enemy attack
 
-	assert(turn == WHITE || turn == BLACK);
+	verify(type::cl(cl));
 
-	auto occ{ pos.side[BOTH] & ~(pos.pieces[KINGS] & pos.side[turn]) };
-	auto inquire{ all_sq };
-	while (inquire)
+	bit64 occ{ pos.side[both] & ~(pos.pieces[king] & pos.side[cl]) };
+	bit64 set{ mask };
+	while (set)
 	{
-		auto sq{ bit::scan(inquire) };
-		if (attack::to_square(pos, sq, occ) & pos.side[turn ^ 1])
-			all_sq ^= (1ULL << sq);
-		inquire &= inquire - 1;
+		square sq{ bit::scan(set) };
+		if (attack::sq(pos, sq, occ) & pos.side[cl ^ 1])
+			mask ^= bit::set(sq);
+		set &= set - 1;
 	}
-	return all_sq;
+	return mask;
 }
 
-uint64 attack::evasions(const board &pos)
+bit64 attack::evasions(const board &pos)
 {
 	// defining the evasion zone if the king is under attack
 
-	uint64 evasions{};
-	auto sq{ pos.sq_king[pos.turn] };
-	auto attacker(attack::to_square(pos, sq, pos.side[BOTH]) & pos.side[pos.xturn]);
+	bit64 evasions{};
+	square sq{ pos.sq_king[pos.cl] };
+	bit64 attacker(attack::sq(pos, sq, pos.side[both]) & pos.side[pos.cl_x]);
+	int attacker_cnt{ bit::popcnt(attacker) };
 
-	switch (bit::popcnt(attacker))
+	if (attacker_cnt == 0)
 	{
-	case 0: // no evasion move necessary
+		// with no attacker, no evasion moves are necessary
 
-		evasions = std::numeric_limits<uint64>::max();
-		break;
+		evasions = bit::max;
+	}
+	else if (attacker_cnt == 1)
+	{
+		// with 1 attacker, only moves that block the attacker's path or capture the attacker are legal
 
-	case 1: // only evasions that block the path or capture the attacker are legal
-
-		if (attacker & pos.pieces[KNIGHTS] || attacker & pos.pieces[PAWNS])
+		if (attacker & (pos.pieces[knight] | pos.pieces[pawn]))
 			evasions = attacker;
 		else
 		{
-			assert(attacker & (pos.pieces[ROOKS] | pos.pieces[BISHOPS] | pos.pieces[QUEENS]));
-			auto rays_attacker{ by_slider<QUEEN>(sq, pos.side[BOTH]) };
-			auto sq_bit{ 1ULL << sq };
-
-			for (auto &ray : magic::ray)
-			{
-				auto flood{ sq_bit };
-				for ( ; !(flood & ray.boarder); flood |= bit::shift(flood, ray.shift));
-				if (flood & attacker)
-				{
-					evasions = flood & rays_attacker;
-					break;
-				}
-			}
+			verify(attacker & (pos.pieces[rook] | pos.pieces[bishop] | pos.pieces[queen]));
+			verify(attacker & bit::ray[sq][bit::scan(attacker)]);
+			verify(bit::popcnt(bit::ray[sq][bit::scan(attacker)] & pos.side[both]) == 2);
+			evasions = bit::ray[sq][bit::scan(attacker)] ^ bit::set(sq);
 		}
-		break;
+	}
+	else
+	{
+		// with 2 attackers, only king move evasions may be legal
 
-	default: // 2 attackers, only king move evasions may be legal
-
-		assert(bit::popcnt(attacker) == 2);
+		verify(attacker_cnt == 2);
 		evasions = 0ULL;
-		break;
 	}
 	return evasions;
 }
 
-void attack::pins(const board &pos, int side_king, int side_pin, uint64 pin_moves[])
+bit64 attack::by_piece(piece pc, square sq, color cl, const bit64 &occ)
 {
-	// finding all pieces that are pinned to the king and defining their legal move zone
-	// i.e. pins of pieces of side_pin to the king of side_king
+	// returning all squares a piece attacks
 
-	auto side_enemy{ side_king ^ 1 };
-	auto king_sq_bit{ pos.pieces[KINGS] & pos.side[side_king] };
-	auto all_attacker
+	verify(type::pc(pc));
+	verify(type::sq(sq));
+	verify(type::cl(cl));
+
+	switch (pc)
 	{
-		pos.side[side_enemy] & (((pos.pieces[BISHOPS] | pos.pieces[QUEENS]) & slide_map[BISHOP][pos.sq_king[side_king]])
-			| ((pos.pieces[ROOKS] | pos.pieces[QUEENS]) & slide_map[ROOK][pos.sq_king[side_king]]))
-	};
-
-	while (all_attacker)
-	{
-		// generating rays centered on the king square
-
-		auto rays_attacker{ by_slider<QUEEN>(pos.sq_king[side_king], all_attacker) };
-		auto attacker{ 1ULL << bit::scan(all_attacker) };
-		if (!(attacker & rays_attacker))
-		{
-			all_attacker &= all_attacker - 1;
-			continue;
-		}
-
-		// creating final ray from king to attacker
-
-		uint64 xray{};
-		for (auto &ray : magic::ray)
-		{
-			auto flood{ king_sq_bit };
-			for ( ; !(flood & ray.boarder); flood |= bit::shift(flood, ray.shift));
-			if (flood & attacker)
-			{
-				xray = flood & rays_attacker;
-				break;
-			}
-		}
-
-		assert(xray & attacker);
-		assert(!(xray & king_sq_bit));
-
-		// allowing only moves inside the x-ray between attacker and king
-
-		auto xray_between{ xray ^ attacker };
-		if (bit::popcnt(xray_between & pos.side[BOTH]) == 1 && (xray_between & pos.side[side_pin]))
-		{
-			assert(bit::popcnt(xray_between & pos.side[side_pin]) == 1);
-			auto sq{ bit::scan(xray_between & pos.side[side_pin]) };
-			pin_moves[sq] = ~xray;
-		}
-
-		// if two pawns from different sides are in the x-ray between an attacking rook/queen and king,
-		// capturing each other en-passant has to be prohibited
-
-		else if (pos.ep_rear
-			&& (xray_between & pos.side[side_king]  & pos.pieces[PAWNS])
-			&& (xray_between & pos.side[side_enemy] & pos.pieces[PAWNS])
-			&& bit::popcnt(xray_between & pos.side[BOTH]) == 2)
-		{
-			assert(bit::popcnt(xray & pos.side[side_enemy]) == 2);
-
-			auto target  { xray & pos.side[side_pin ^ 1] & pos.pieces[PAWNS] };
-			auto attacker{ xray & pos.side[side_pin] & pos.pieces[PAWNS] };
-
-			if ((attacker << 1 == target || attacker >> 1 == target)
-				&& (pos.ep_rear == bit::shift(target, shift::push[side_pin])))
-			{
-				auto sq{ bit::scan(xray_between & pos.side[side_pin]) };
-					pin_moves[sq] = pos.ep_rear;
-			}
-		}
-		all_attacker &= all_attacker - 1;
+	case pawn:   return bit::pawn_attack[cl][sq];
+	case knight: return bit::pc_attack[knight][sq];
+	case bishop: return by_slider<bishop>(sq, occ);
+	case rook:   return by_slider<rook>(sq, occ);
+	case queen:  return by_slider<queen>(sq, occ);
+	case king:   return bit::pc_attack[king][sq];
+	default:     verify(false); return 0ULL;
 	}
 }
 
-uint64 attack::by_piece(int piece, int sq, int side, const uint64 &occ)
-{
-	// returning all squares the <piece> of <side> on square <sq> attacks
-	 
-	switch (piece)
-	{
-	case PAWNS:   return king_map[sq] & slide_map[BISHOP][sq] & in_front[side][sq];
-	case KNIGHTS: return knight_map[sq];
-	case BISHOPS: return by_slider<BISHOP>(sq, occ);
-	case ROOKS:   return by_slider<ROOK>(sq, occ);
-	case QUEENS:  return by_slider<QUEEN>(sq, occ);
-	case KINGS:   return king_map[sq];
-	default:      assert(false); return 0ULL;
-	}
-}
+template bit64 attack::by_slider<bishop>(square, bit64);
+template bit64 attack::by_slider<rook>(square, bit64);
+template bit64 attack::by_slider<queen>(square, bit64);
 
-template uint64 attack::by_slider<ROOK>  (int sq, uint64 occ);
-template uint64 attack::by_slider<BISHOP>(int sq, uint64 occ);
-template uint64 attack::by_slider<QUEEN> (int sq, uint64 occ);
-
-template<sliding_type sl>
-uint64 attack::by_slider(int sq, uint64 occ)
+template<piece pc>
+bit64 attack::by_slider(square sq, bit64 occ)
 {
 	// magic index hashing function to generate sliding moves
+	// if the BMI2 instruction PEXT is enabled, using PEXT instead for faster performance
+	
+	if constexpr (pc == queen)
+		return by_slider<rook>(sq, occ) | by_slider<bishop>(sq, occ);
 
-	if (sl == QUEEN)
-		return by_slider<ROOK>(sq, occ) | by_slider<BISHOP>(sq, occ);
-
-	assert(sq >= H1 && sq <= A8);
-	assert(sl == ROOK || sl == BISHOP);
-
-	// if available using the faster BMI2 PEXT instruction instead
+	verify(type::sq(sq));
+	verify(pc - 2 == magic::bishop || pc - 2 == magic::rook);
+	auto& entry{ magic::slider[pc - 2][sq] };
 
 #if defined(PEXT)
-	return magic::attack_table[_pext_u64(occ, magic::slider[sl][sq].mask) + magic::slider[sl][sq].offset];
-
+	auto index{ entry.offset + _pext_u64(occ, entry.mask) };
 #else
-	occ  &= magic::slider[sl][sq].mask;
-	occ  *= magic::slider[sl][sq].magic;
-	occ >>= magic::slider[sl][sq].shift;
-	occ  += magic::slider[sl][sq].offset;
-	return  magic::attack_table[occ];
-
+	auto index{ entry.offset + ((occ & entry.mask) * entry.magic >> entry.shift) };
 #endif
+	return magic::attack_table[(uint32)index];
 }
 
-uint64 attack::by_pawns(const board &pos, int side)
+bit64 attack::by_pawns(bit64 pawns, color cl)
 {
-	// returning all squares attacked by pawns of <side>
+	// returning all squares attacked by pawns
 
-	assert(side == WHITE || side == BLACK);
-
-	return bit::shift(pos.pieces[PAWNS] & pos.side[side] & ~bit::file_west[side], shift::capture_west[side])
-		 | bit::shift(pos.pieces[PAWNS] & pos.side[side] & ~bit::file_east[side], shift::capture_east[side]);
+	verify(type::cl(cl));
+	return bit::shift(pawns & bit::no_west_boarder[cl], shift::capture_west[cl])
+		 | bit::shift(pawns & bit::no_east_boarder[cl], shift::capture_east[cl]);
 }
 
-int attack::see(const board &pos, uint32 move)
+bit64 attack::sq(const board &pos, square sq, const bit64 &occ)
 {
-	// doing a static exchange evaluation of the square reached by <move>
+	// finding all attacking pieces of a square
 
-	move::elements el{ move::decode(move) };
+	verify(type::sq(sq));
+	return (pos.pieces[pawn]   & bit::pawn_attack[white][sq] & pos.side[black])
+		|  (pos.pieces[pawn]   & bit::pawn_attack[black][sq] & pos.side[white])
+		|  (pos.pieces[knight] & bit::pc_attack[knight][sq])
+		| ((pos.pieces[bishop] | pos.pieces[queen]) & by_slider<bishop>(sq, occ))
+		| ((pos.pieces[rook]   | pos.pieces[queen]) & by_slider<rook>(sq, occ))
+		|  (pos.pieces[king]   & bit::pc_attack[king][sq]);
+}
 
-	assert(el.piece == pos.piece[el.sq1]);
-	assert(el.turn  == pos.turn);
+bool attack::see_above(const board& pos, move new_mv, score margin)
+{
+	// testing a move through Static Exchange Evaluation (SEE)
+	// if the evaluation is at least equal to the margin or above, true is returned
 
-	if (move::castling(el.flag))
-		el.sq2 = square::king_target[el.turn][move::castle_side(el.flag)];
+	verify_deep(new_mv.sq1() == new_mv.sq2() || pos.pseudolegal(new_mv));
 
-	auto attacker{ 1ULL << el.sq1 };
-	auto occ{ pos.side[BOTH] };
-	auto set{ attack::to_square(pos, el.sq2, occ) };
-	auto xray_block{ occ ^ pos.pieces[KINGS] ^ pos.pieces[KNIGHTS] };
+	move::item mv{ new_mv };
+	if (mv.castling())
+		return 0 >= margin;
 
-	int gain[32]{ value[el.victim] };
-	int depth{};
+	// cutoff if even a free piece is not good enough
 
-	if (el.flag >= PROMO_ALL)
-		el.piece = move::promo_piece(el.flag);
+	score sc{ value[mv.vc] - margin };
+	if (sc < 0)
+		return false;
 
-	if (el.flag == ENPASSANT)
+	// cutoff if after the recapture the standing pat is not good enough
+
+	if (mv.fl >= promo_knight)
+		mv.pc = mv.promo_pc();
+	sc -= value[mv.pc];
+	if (sc >= 0)
+		return true;
+
+	color cl{ mv.cl ^ 1 };
+	bit64 occ{ (pos.side[both] ^ bit::set(mv.sq1)) | bit::set(mv.sq2) };
+	if (mv.fl == enpassant)
 	{
-		assert(pos.piece[bit::scan(bit::shift(pos.ep_rear, shift::push[pos.xturn]))] == PAWNS);
-		attacker |= bit::shift(pos.ep_rear, shift::push[pos.xturn]);
+		verify(bit::shift(pos.ep_rear, shift::push1x[cl]) & pos.pieces[pawn] & pos.side[cl]);
+		occ ^= bit::shift(pos.ep_rear, shift::push1x[cl]);
 	}
+	bit64 attackers{ attack::sq(pos, mv.sq2, occ) & ~bit::set(mv.sq1) };
 
-	// looping through the exchange sequence
-
-	for ( ; attacker; attacker = least_valuable(pos, set & pos.side[el.turn], el.piece))
+	while (true)
 	{
-		depth += 1;
-		gain[depth] = value[el.piece] - gain[depth - 1];
+		auto least{ see::least_valuable(pos, attackers & pos.side[cl]) };
+		bit64  att{ std::get<0>(least) };
+		piece   pc{ std::get<1>(least) };
 
-		// pruning early if the exchange balance is decisive (but the resulting score may not be exact)
-
-		if (std::max(-gain[depth - 1], gain[depth]) < 0)
+		if (!att)
 			break;
+		attackers ^= att;
+		occ ^= att;
+		attackers |= see::add_xray_attacker(pos, mv.sq2, occ);
+		cl ^= 1;
+		
+		// minimaxing the running score and adding the next capture
 
-		el.turn ^= 1;
-		set ^= attacker;
-		occ ^= attacker;
+		sc = -sc - score(1) - value[pc];
 
-		// adding uncovered x-ray attackers to the set
+		// if after the capture the score is still positive, the side to move now looses
+		// even if there were further recaptures possible, the material cannot be recovered anymore
 
-		if (attacker & xray_block)
-			set |= add_xray_attacker(pos, el.sq2, occ);
+		if (sc >= 0)
+		{
+			// if the king can be recaptured, the capture was illegal and the other side wins
+
+			if (pc == king && (attackers & pos.side[cl]))
+				cl ^= 1;
+			break;
+		}
 	}
-	return sum_gain(gain, depth);
+	return mv.cl != cl;
+}
+
+bool attack::escape(const board& pos, move mv)
+{
+	// checking whether the move escapes a capture
+
+	verify_deep(pos.pseudolegal(mv));
+	verify(mv.quiet());
+
+	mv.set_sq2(mv.sq1());
+	return !attack::see_above(pos, mv, score(0));
 }

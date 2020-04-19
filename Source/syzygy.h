@@ -1,8 +1,6 @@
 /*
-  Monolith 1.0
-  Copyright (C) 2011-2015 Ronald de Man
-  Copyright (C) 2017-2018 Jonas Mayr
-
+  Monolith 2
+  Copyright (C) 2017-2020 Jonas Mayr
   This file is part of Monolith.
 
   Monolith is free software: you can redistribute it and/or modify
@@ -23,26 +21,32 @@
 #pragma once
 
 #include "movepick.h"
-#include "position.h"
+#include "board.h"
+#include "types.h"
 #include "main.h"
 
-// probing syzygy endgame tablebases
-// all credits go to Ronald de Man for creating the awesome tablebases and providing the probing code:
-// https://github.com/syzygy1/tb
-// the probing code has been modified to conform with the engine
+/*
+  probing Syzygy endgame tablebases
+  all credits go to Ronald de Man for creating the tablebases and providing the probing code:
+  https://github.com/syzygy1/tb
+  https://github.com/syzygy1/Cfish
+  the probing code has been modified to conform with the engine
+  DTM tablebases have not been officially released yet, their probing code is therefore not complete
+  32-bit is only supported for up to 5-piece tables
+*/
 
 namespace syzygy
 {
-	extern int max_pieces;
-	extern int tablebases;
+	extern int pc_max;
+	extern int tb_cnt;
 
-	void init_tablebases(std::string &path);
+    void init_tb(const std::string& path);
 
 	// probing the tablebases
 
-	int probe_wdl(board &pos, int &success);
-	int probe_dtz(board &pos, int &success);
+    int probe_wdl(board& pos, int& success);
+    int probe_dtz(board& pos, int& success);
 
-	bool probe_dtz_root(board &pos, rootpick &pick, uint64 repetition_hash[], int &tb_score);
-	bool probe_wdl_root(board &pos, rootpick &pick, int &tb_score);
+    bool probe_dtz_root(board& pos, rootpick& pick, const std::array<key64, 256>& rep_hash);
+    bool probe_wdl_root(board& pos, rootpick& pick);
 }

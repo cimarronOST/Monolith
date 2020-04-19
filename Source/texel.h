@@ -1,6 +1,5 @@
 /*
-  Monolith 1.0  Copyright (C) 2017-2018 Jonas Mayr
-
+  Monolith 2 Copyright (C) 2017-2020 Jonas Mayr
   This file is part of Monolith.
 
   Monolith is free software: you can redistribute it and/or modify
@@ -22,15 +21,14 @@
 
 #include "main.h"
 
-// tuning evaluation parameters with the texel tuning method
+// tuning evaluation parameters with the Texel tuning method
 
 namespace texel
 {
 #if defined(TUNE)
-	void tune(std::string &epd_file, int thread_count);
+	void tune(std::string &epd_file, int thread_cnt);
 
 #else
 	inline void tune(std::string&, int) {}
-
 #endif
 }

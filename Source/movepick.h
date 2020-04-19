@@ -1,6 +1,5 @@
 /*
-  Monolith 1.0  Copyright (C) 2017-2018 Jonas Mayr
-
+  Monolith 2 Copyright (C) 2017-2020 Jonas Mayr
   This file is part of Monolith.
 
   Monolith is free software: you can redistribute it and/or modify
@@ -21,103 +20,112 @@
 #pragma once
 
 #include "uci.h"
+#include "move.h"
 #include "movesort.h"
 #include "movegen.h"
+#include "types.h"
 #include "main.h"
 
-// orchestrating the generation and sorting of the root node movelist
+// orchestrating the generation and sorting of the root node move-list
 
 class rootpick
 {
+private:
+	gen<mode::legal> list;
+	rootsort sort;
+	int mv_n{};
+
 public:
-
-	gen list;
-	sort_root sort;
 	bool tb_pos{};
+	int  mv_cnt()       const { return list.cnt.mv; };
+	bool single_reply() const { return mv_cnt() == 1; };
+	bool tb_win()       const { return (score)sort.root[0].weight == score::tb_win; };
 
-	rootpick(board &pos) : list(pos, LEGAL), sort(list)
+	rootpick(const board& pos) : list{ pos }, sort{ list }
 	{
-		if (uci::limit.moves.size())
-			list.gen_searchmoves(uci::limit.moves);
+		if (!uci::limit.searchmoves.empty())
+			list.gen_searchmoves(uci::limit.searchmoves);
 		else
 			list.gen_all();
 
 		sort.statical();
 	}
 
-	// adjusting the root moves
+	// adjusting the root move order
 
-	void rearrange_moves(uint32 pv_move, uint32 multipv_move);
-	bool single_reply() const;
+	void rearrange_list(move pv_mv, move multipv_mv);
+	void sort_tb() { sort.sort_moves(); };
+
+	// picking the next move from the list
+
+	rootsort::root_node*  next() { return mv_n < mv_cnt() ? &sort.root[mv_n++] : nullptr; };
+	rootsort::root_node* first() { mv_n = 0; return next(); };
+
+	// reverting the move
+
+	void revert(board& pos) const { pos = list.pos; }
 };
 
-// orchestrating the generation and weighting of the movelist, and picking moves from it
+// orchestrating the generation and weighting of the move-list, and picking moves from it
 
-class movepick
+template<mode md> class movepick
 {
 public:
-
-	gen list;
+	gen<md> list;
 	int hits{};
 
 private:
+	sort<md> weight;
+	std::array<genstage, 6> st{};
+	move_list* deferred_mv{};
+	int* deferred_cnt{};
 
-	sort weight;
-	gen_stage stage[6]{};
-	uint32 *deferred_moves;
-
-	struct move_count
+	struct move_cnt
 	{
 		int cycles{ -1 };
 		int max_cycles{};
-
 		int attempts{};
-		int moves{};
-	} count;
-	
+		int mv{};
+	} cnt;
+
 	// generating and weighting the moves
 
 	void gen_weight();
 
 public:
-
 	// alpha-beta search
 
-	movepick(board &pos, uint32 tt_move, uint32 counter, uint32 killer[], int history[][6][64], uint32 deferred[])
-		: list(pos, PSEUDO), weight(list, tt_move, counter, killer, history), deferred_moves(deferred)
+	movepick(board& pos, move mv_tt, move mv_prev1, move mv_prev2, move counter, killer_list& killer,
+		history& hist, move_list& deferred, int& defer_cnt)
+		: list{ pos }, weight{ list, mv_tt, mv_prev1, mv_prev2, counter, killer, hist },
+		  deferred_mv{ &deferred }, deferred_cnt{ &defer_cnt }
 	{
-		count.max_cycles = 5 + (uci::thread_count > 1);
-		stage[0] = HASH;
-		stage[1] = WINNING;
-		stage[2] = KILLER;
-		stage[3] = QUIET;
-		stage[4] = LOOSING;
-		stage[5] = DEFERRED;
+		cnt.max_cycles = 5 + (uci::thread_cnt > 1 && uci::use_abdada);
+		st = { { genstage::hash, genstage::winning, genstage::killer, genstage::quiet, genstage::loosing, genstage::deferred } };
 	}
 
 	// quiescence search
 
-	movepick(board &pos, bool in_check, int depth)
-		: list(pos, LEGAL), weight(list), deferred_moves(nullptr)
+	movepick(board &pos, bool in_check) : list{ pos }, weight{ list }
 	{
-		count.max_cycles = 1 + (depth == 0);
-		stage[0] = TACTICAL;
-		stage[1] = CHECK;
-
-		if (in_check)
-		{
-			count.max_cycles = 2;
-			stage[1] = EVASION;
-		}
+		cnt.max_cycles = 1 + in_check;
+		st = { { genstage::tactical, genstage::evasion } };
 	}
 
 public:
+	void revert(board& pos)     { pos = list.pos; hits -= 1; }
+	bool stage_deferred() const { return st[cnt.cycles] == genstage::deferred; }
+	bool can_defer() const
+	{
+		// making sure the movepick-object is not regenerating deferred moves currently
+		// this is checked to make sure that moves are only deferred once
+		// single-threaded, this condition is always false and therefore no moves get deferred
 
-	void revert(board &pos);
-	bool can_defer() const;
+		return uci::thread_cnt > 1 && !stage_deferred();
+	}
 
 	// picking the highest weighted move
-	// and if there is none left, initializing further generation and weighting
+	// if there is none left, further generation and weighting is initialized
 
-	uint32 next();
+	move next();
 };

@@ -1,6 +1,5 @@
 /*
-  Monolith 1.0  Copyright (C) 2017-2018 Jonas Mayr
-
+  Monolith 2 Copyright (C) 2017-2020 Jonas Mayr
   This file is part of Monolith.
 
   Monolith is free software: you can redistribute it and/or modify
@@ -18,1050 +17,969 @@
 */
 
 
-#include <array>
-
-#include "utilities.h"
-#include "stream.h"
-#include "uci.h"
 #include "attack.h"
 #include "bit.h"
 #include "eval.h"
 
-// material weights
+std::array<std::array<int, 6>, 2> eval::piece_value
+{ {
+	{{   71, 348, 371, 502, 1077, 0 }},
+	{{  100, 342, 368, 618, 1206, 0 }}
+} };
 
-int eval::piece_value[2][6]
-{
-	{  81, 354, 363, 522, 1080, 0 },
-	{ 100, 323, 340, 581, 1123, 0 }
-};
-
-int eval::phase_value[6]{ 0, 2, 2, 3, 9 };
+std::array<int, 6> eval::phase_value{ { 0, 2, 2, 3, 9 } };
+std::array<int, 6> eval::complexity { { 6, 2, 17, 50, -33, -55 } };
 
 // piece weights
 
-int eval::bishop_pair[2]   { 33, 55 };
-int eval::knight_outpost[2]{  6,  5 };
+std::array<int, 2> eval::bishop_pair       { {  28, 56 } };
+std::array<int, 2> eval::bishop_color_pawns{ {  -6, -4 } };
+std::array<int, 2> eval::bishop_trapped    { { -11, -5 } };
+std::array<int, 2> eval::knight_outpost    { {  10,  6 } };
+std::array<int, 4> eval::knight_distance_kings{ { -18, -12, -22, -69 } };
 
-int eval::major_on_7th[2]  { -5, 25 };
-int eval::rook_open_file[2]{ 16,  4 };
+std::array<int, 2> eval::major_on_7th  { { -12, 27 } };
+std::array<int, 2> eval::rook_open_file{ {  15,  5 } };
 
 // threat weights
 
-int eval::pawn_threat[2]       {  10, -12 };
-int eval::minor_threat[2]      { -38, -20 };
-int eval::queen_threat[2]      { -50,  28 };
-int eval::queen_threat_minor[2]{  23,   3 };
+std::array<int, 2> eval::threat_pawn { {  11, -17 } };
+std::array<int, 2> eval::threat_minor{ { -18, -20 } };
+std::array<int, 2> eval::threat_rook { { -36,  -3 } };
+std::array<int, 2> eval::threat_queen_by_minor{ { -19, -28 } };
+std::array<int, 2> eval::threat_queen_by_rook { { -38, -38 } };
+std::array<int, 2> eval::threat_piece_by_pawn { { -42,  -1 } };
 
-// king threat weights
-// credits go to https://www.chessprogramming.org/King_Safety
+// king safety weights
 
-int eval::king_threat_weight[5]{ 0, 2, 2, 3, 5 };
-int eval::king_threat[64]
-{
-	  0,   0,   0,   2,   3,   5,   7,   9,
-	 12,  15,  18,  22,  26,  30,  35,  39,
-	 44,  50,  56,  62,  68,  75,  82,  85,
-	 89,  97, 105, 113, 122, 131, 140, 150,
-	169, 180, 191, 202, 213, 225, 237, 248,
-	260, 272, 283, 295, 307, 319, 330, 342,
-	354, 366, 377, 389, 401, 412, 424, 436,
-	448, 459, 471, 483, 494, 500, 500, 500
-};
+int eval::weak_king_sq{ 19 };
+std::array<int,  5> eval::threat_king_by_check{ { 0, 48, 32, 81, 37 } };
+std::array<int,  5> eval::threat_king_weight  { { 0,  4,  3,  4,  4 } };
+std::array<int, 60> eval::threat_king
+{ {
+		  0,   0,   0,   0,   0,   0,   0,  -1,  -5,   1,
+		  6,  13,   8,  28,  32,  35,  27,  57,  52,  60,
+		 58,  76,  81, 112,  79, 114, 144, 117, 128, 155,
+		152, 190, 179, 228, 200, 211, 220, 178, 303, 257,
+		289, 331, 288, 293, 299, 301, 303, 469, 355, 397,
+		436, 462, 298, 605, 617, 479, 467, 491, 926, 954
+ } };
 
 // pawn weights
 
-int eval::isolated[2]{ -6, -12 };
-int eval::backward[2]{ -3,  -4 };
+std::array<int, 2> eval::isolated{ { -7, -10 } };
+std::array<int, 2> eval::backward{ { -5,  -4 } };
 
-int eval::connected[2][2][8]
+std::array<std::array<std::array<int, 8>, 2>, 2> eval::connected
 { {
-	{  0,  4, 15, 16, 22, 35, 89,  0 },
-	{  0, -5,  3,  3,  9, 37, 22,  0 }
+	{{
+		{{  0,  3, 15, 16, 22, 34, 150,  0 }},
+		{{  0, -2, 10,  9, 15, 53,  21,  0 }}
+	}}
 } };
 
-int eval::king_distance_enemy[2] {  0, 22 };
-int eval::king_distance_friend[2]{ -4, -6 };
+std::array<int, 2> eval::king_distance_cl  { { -6, -8 } };
+std::array<int, 2> eval::king_distance_cl_x{ {  0, 24 } };
 
-int eval::passed_rank[2][8]{ {  0, -27, -26,   6,  52, 149, 289,   0 } };
-int eval::shield_rank[2][8]{ {  0,  -1,  -7, -13, -16,  -9, -34, -30 } };
-int eval::storm_rank[ 2][8]{ {  0,   0,   0,  -1,   5,   9,   0,   0 } };
+std::array<std::array<int, 8>, 2> eval::passed_rank{ { {{ 0, -25, -22,  18,  72, 161, 289,   0 }} } };
+std::array<std::array<int, 8>, 2> eval::shield_rank{ { {{ 0,   0,  -3, -11, -11,   6,   7, -27 }} } };
+std::array<std::array<int, 8>, 2> eval::storm_rank { { {{ 0,   0,   0,   0,   9,   7,   0,   0 }} } };
 
 // mobility weights
 
-int eval::knight_mobility[2][9]
-{
-	{ -10, -13,  2,  6, 18, 24, 31, 38, 44, },
-	{ -37, -27, -3, 12, 12, 19, 20, 21, 15, }
-};
-int eval::bishop_mobility[2][14]
-{
-	{ -18,  -4,  11, 13, 21, 28, 34, 37, 38, 40, 41, 44, 42, 56, },
-	{ -22, -26, -22, -3, 10, 19, 21, 27, 33, 32, 31, 33, 29, 30, }
-};
-int eval::rook_mobility[2][15]
-{
-	{ -21, -18,  -9, -2,  4,  4,  3,  3,  7, 12, 11, 11, 20, 23, 21, },
-	{ -93, -42, -20, -1,  8, 18, 27, 29, 32, 35, 42, 45, 46, 55, 56, }
-};
-int eval::queen_mobility[2][28]
-{
-	{ -30, -20, -20, -14, -12,  -5,  -5,   4,   7,  9, 11, 13, 14, 14, 14, 15, 20, 17, 18, 22, 22, 30, 39, 43, 55, 59, 66, 80, },
-	{ -30, -13, -21, -15, -42, -57, -35, -29, -30, -7, -3,  4,  8, 22, 33, 37, 39, 47, 52, 54, 65, 61, 53, 54, 48, 55, 50, 60, }
-};
+std::array<std::array<int, 9>, 2> eval::knight_mobility
+{ {
+	{{ -61, -25, -9,  0,  8, 13, 22, 31, 40 }},
+	{{ -57, -26,  5, 18, 22, 29, 31, 29, 28 }}
+} };
+std::array<std::array<int, 14>, 2> eval::bishop_mobility
+{ {
+	{{ -44,  -5,  9, 20, 27, 34, 37, 40, 40, 43, 45, 48, 70, 86 }},
+	{{ -36, -35, -8, 10, 21, 28, 32, 36, 42, 42, 40, 35, 37, 24 }}
+} };
+std::array<std::array<int, 15>, 2> eval::rook_mobility
+{ {
+	{{  -62, -49,  -4, 7,  6,  4,  5,  7, 11, 14, 16, 19, 18, 24, 16 }},
+	{{ -108, -55, -13, 1, 13, 22, 29, 31, 33, 37, 43, 45, 50, 47, 55 }}
+} };
+std::array<std::array<int, 28>, 2> eval::queen_mobility
+{ {
+	{{ -253, -168, -75, -36,   -7,  -5,   0,   2,  8, 8, 13, 15, 16, 17, 17, 20, 16, 18,  7, 17, 19, 18, 23,  3, 31, 76, 44, 139 }},
+	{{ -174, -103, -23, -49, -103, -54, -33, -12, -7, 8,  8, 12, 21, 25, 32, 36, 48, 45, 57, 53, 56, 51, 54, 81, 73, 44, 20,  45 }}
+} };
 
 // piece square tables
 
-int eval::pawn_psq[2][2][64]
+std::array<std::array<std::array<int, 64>, 2>, 2> eval::pawn_psq
 { {
-	{
-		  0,   0,   0,   0,   0,   0,   0,   0,
-		-10,   8,  14,  20,  20,  14,   8, -10,
-		 17,  31,  41,  35,  35,  41,  31,  17,
-		  0,   4,   7,  15,  15,   7,   4,   0,
-		-11,  -8,   1,  11,  11,   1,  -8, -11,
-		-10,  -7,  -5,  -4,  -4,  -5,  -7, -10,
-		-11,   8,   5,  -6,  -6,   5,   8, -11,
-		  0,   0,   0,   0,   0,   0,   0,   0,
-	},
-	{
-		  0,   0,   0,   0,   0,   0,   0,   0,
-		 37,  31,  15,   8,   8,  15,  31,  37,
-		  9,   5,  -7, -21, -21,  -7,   5,   9,
-		  2,  -2,  -7, -11, -11,  -7,  -2,   2,
-		 -8,  -9,  -8, -10, -10,  -8,  -9,  -8,
-		-16, -14,  -8,  -1,  -1,  -8, -14, -16,
-		-12, -10,   1,   5,   5,   1, -10, -12,
-		  0,   0,   0,   0,   0,   0,   0,   0,
-	}
+	{{
+		{{
+				  0,   0,   0,   0,   0,   0,   0,   0,
+				-76, -43,   2,  36,  36,   2, -43, -76,
+				  0,   7,  38,  25,  25,  38,   7,   0,
+				 -8,  -5,  -2,  10,  10,  -2,  -5,  -8,
+				 -4,  -7,   4,  11,  11,   4,  -7,  -4,
+				-12,  -6,  -9,  -2,  -2,  -9,  -6, -12,
+				 -5,   6,   7,   0,   0,   7,   6,  -5,
+				  0,   0,   0,   0,   0,   0,   0,   0
+		}},
+		{{
+				  0,   0,   0,   0,   0,   0,   0,   0,
+				  7,  -3, -24, -63, -63, -24,  -3,   7,
+				 20,  16,  -5, -34, -34,  -5,  16,  20,
+				  8,   3,  -2, -11, -11,  -2,   3,   8,
+				 -3,  -2,  -5,  -5,  -5,  -5,  -2,  -3,
+				 -7, -11,  -7,  -1,  -1,  -7, -11,  -7,
+				 -1,  -1,   5,  10,  10,   5,  -1,  -1,
+				  0,   0,   0,   0,   0,   0,   0,   0
+		}}
+	}}
 } };
-int eval::knight_psq[2][2][64]
+std::array<std::array<std::array<int, 64>, 2>, 2> eval::knight_psq
 { {
-	{
-	   -113, -64, -73, -20, -20, -73, -64,-113,
-		-16,  -4,  46,  16,  16,  46,  -4, -16,
-		 10,  41,  35,  49,  49,  35,  41,  10,
-		 22,  22,  26,  32,  32,  26,  22,  22,
-		  8,  22,  19,  23,  23,  19,  22,   8,
-		 -9,   3,  12,  21,  21,  12,   3,  -9,
-		-10,  -3,   8,  10,  10,   8,  -3, -10,
-		-40,  -1,  -7,   6,   6,  -7,  -1, -40,
-	},
-	{
-		-58, -36,  -4, -17, -17,  -4, -36, -58,
-		-20,  -7, -16,   4,   4, -16,  -7, -20,
-		-20,  -6,   9,  11,  11,   9,  -6, -20,
-		 -3,  17,  21,  27,  27,  21,  17,  -3,
-		 -3,   4,  18,  26,  26,  18,   4,  -3,
-		-13,  -2,   3,  21,  21,   3,  -2, -13,
-		-16,  -7,  -6,   4,   4,  -6,  -7, -16,
-		 -9, -22,  -3,  -3,  -3,  -3, -22,  -9,
-	}
+	{{
+		{{
+			   -141, -89, -99, -62, -62, -99, -89,-141,
+				-32, -25,  27,   0,   0,  27, -25, -32,
+				 -1,  23,  31,  24,  24,  31,  23,  -1,
+				 24,  15,  28,  23,  23,  28,  15,  24,
+				 12,  16,  14,  11,  11,  14,  16,  12,
+				 -1,   8,  12,   9,   9,  12,   8,  -1,
+				 -2,   0,   2,   5,   5,   2,   0,  -2,
+				-31, -13,  -9,  -9,  -9,  -9, -13, -31
+		}},
+		{{
+				-47, -14,  -4,   0,   0,  -4, -14, -47,
+				-18,  15,   1,   4,   4,   1,  15, -18,
+				 -5,   8,  16,  13,  13,  16,   8,  -5,
+				  5,  18,  19,  21,  21,  19,  18,   5,
+				 12,  11,  19,  27,  27,  19,  11,  12,
+				  4,  12,  12,  22,  22,  12,  12,   4,
+				 17,  11,   4,   9,   9,   4,  11,  17,
+				  4,   4,   1,   7,   7,   1,   4,   4
+		}}
+	}}
 } };
-int eval::bishop_psq[2][2][64]
+std::array<std::array<std::array<int, 64>, 2>, 2> eval::bishop_psq
 { {
-	{
-		-53, -51, -57, -60, -60, -57, -51, -53,
-		-62, -17,  -9, -35, -35,  -9, -17, -62,
-		  4,   9,  29,  31,  31,  29,   9,   4,
-		-16,  -5,   7,  21,  21,   7,  -5, -16,
-		 -2,  -6,  -4,  16,  16,  -4,  -6,  -2,
-		 -5,   9,  10,   1,   1,  10,   9,  -5,
-		 -3,  20,   7,  -4,  -4,   7,  20,  -3,
-		-19,  -6,  -4,  -9,  -9,  -4,  -6, -19,
-	},
-	{
-		-14,  -7, -10,  -1,  -1, -10,  -7, -14,
-		  2,  -5,  -5,  -4,  -4,  -5,  -5,   2,
-		 -3,  -3,  -5, -12, -12,  -5,  -3,  -3,
-		  1,   3,   4,   8,   8,   4,   3,   1,
-		-12,  -2,   5,   6,   6,   5,  -2, -12,
-		-12,  -4,  -1,   6,   6,  -1,  -4, -12,
-		-17, -15,  -9,  -4,  -4,  -9, -15, -17,
-		 -5,  -2,  -4,  -2,  -2,  -4,  -2,  -5,
-	}
+	{{
+		{{
+				-73, -81, -67,-115,-115, -67, -81, -73,
+				-50, -49, -32, -42, -42, -32, -49, -50,
+				  1,   1,  11,   5,   5,  11,   1,   1,
+				-31,  -5,  -3,  13,  13,  -3,  -5, -31,
+				 -1, -19,  -5,   9,   9,  -5, -19,  -1,
+				 -4,  10,   4,   4,   4,   4,  10,  -4,
+				 14,  15,  14,  -4,  -4,  14,  15,  14,
+				 11,   9,  -8,  -2,  -2,  -8,   9,  11
+		}},
+		{{
+				 -4,   8,   4,  15,  15,   4,   8,  -4,
+				 -7,  -4,   0,   3,   3,   0,  -4,  -7,
+				 -6,   0,   2,  -5,  -5,   2,   0,  -6,
+				  6,   8,   6,  11,  11,   6,   8,   6,
+				 -6,  -1,   8,   8,   8,   8,  -1,  -6,
+				 -8,   4,   4,   9,   9,   4,   4,  -8,
+				 -6,  -6,  -8,   1,   1,  -8,  -6,  -6,
+				 -3, -11,   5,  -1,  -1,   5, -11,  -3
+		}}
+	}}
 } };
-int eval::rook_psq[2][2][64]
+std::array<std::array<std::array<int, 64>, 2>, 2> eval::rook_psq
 { {
-	{
-		 12,   1, -12,  14,  14, -12,   1,  12,
-		  5,  -6,  25,  18,  18,  25,  -6,   5,
-		 -3,   7,  -9,   4,   4,  -9,   7,  -3,
-		-11,  -9,  -4,  -1,  -1,  -4,  -9, -11,
-		-25, -11, -14, -15, -15, -14, -11, -25,
-		-21,  -8,  -9,  -5,  -5,  -9,  -8, -21,
-		-27,  -6,   0,   1,   1,   0,  -6, -27,
-		 -4,  -8,   1,   5,   5,   1,  -8,  -4,
-	},
-	{
-		 12,  17,  24,  17,  17,  24,  17,  12,
-		  1,  11,   4,   4,   4,   4,  11,   1,
-		  7,  11,  15,  10,  10,  15,  11,   7,
-		 10,   7,  15,   9,   9,  15,   7,  10,
-		  6,   9,   8,   8,   8,   8,   9,   6,
-		 -6,  -2,   0,  -4,  -4,   0,  -2,  -6,
-		 -5, -11,  -6,  -7,  -7,  -6, -11,  -5,
-		 -8,  -6,  -3,  -8,  -8,  -3,  -6,  -8,
-	}
+	{{
+		{{
+				 45,  13,  40,  15,  15,  40,  13,  45,
+				 11,  -1,  16,  19,  19,  16,  -1,  11,
+				 -5,  21,   5,  14,  14,   5,  21,  -5,
+				-15,  -5,  -2,  -3,  -3,  -2,  -5, -15,
+				-15,  -7, -21, -14, -14, -21,  -7, -15,
+				-16,   4,  -7,  -9,  -9,  -7,   4, -16,
+				-16,  -7,  -5,   0,   0,  -5,  -7, -16,
+				 -8,  -3,   0,   4,   4,   0,  -3,  -8
+		}},
+		{{
+				  1,  15,  26,  27,  27,  26,  15,   1,
+				 -5,  16,  15,   8,   8,  15,  16,  -5,
+				 11,  16,  24,  14,  14,  24,  16,  11,
+				 15,  20,  17,  11,  11,  17,  20,  15,
+				  7,   5,  13,   9,   9,  13,   5,   7,
+				 -1,  -6,  -2,   0,   0,  -2,  -6,  -1,
+				 -2,  -5,  -6,  -3,  -3,  -6,  -5,  -2,
+				 -1,  -7,  -3, -10, -10,  -3,  -7,  -1
+		}}
+	}}
 } };
-int eval::queen_psq[2][2][64]
+std::array<std::array<std::array<int, 64>, 2>, 2> eval::queen_psq
 { {
-	{
-		-11,  10,   2,   8,   8,   2,  10, -11,
-		 26, -39,  17, -12, -12,  17, -39,  26,
-		 19,  16,   5,  -3,  -3,   5,  16,  19,
-		 -2,  -8,  -1,  -8,  -8,  -1,  -8,  -2,
-		  0,  10,  -3,  -5,  -5,  -3,  10,   0,
-		  8,  16,   8,   4,   4,   8,  16,   8,
-		  5,  21,  22,  18,  18,  22,  21,   5,
-		 16,   1,   0,  18,  18,   0,   1,  16,
-	},
-	{
-		 22,  22,  36,  34,  34,  36,  22,  22,
-		-15,  31,  15,  55,  55,  15,  31, -15,
-		 15,   5,  40,  65,  65,  40,   5,  15,
-		 38,  59,  41,  63,  63,  41,  59,  38,
-		 26,  21,  38,  53,  53,  38,  21,  26,
-		 -1,   3,  29,  23,  23,  29,   3,  -1,
-		 -5, -24, -18,   2,   2, -18, -24,  -5,
-		-29, -20,  -6, -19, -19,  -6, -20, -29,
-	}
+	{{
+		{{
+				-11,   0,  45,  31,  31,  45,   0, -11,
+				 25, -23,  -4, -23, -23,  -4, -23,  25,
+				 36,  28,  -1,   1,   1,  -1,  28,  36,
+				  7,   3,  -7, -13, -13,  -7,   3,   7,
+				  8,   9,   3,   1,   1,   3,   9,   8,
+				 15,  18,   8,   5,   5,   8,  18,  15,
+				 17,  19,  18,  18,  18,  18,  19,  17,
+				 20,   8,   4,  13,  13,   4,   8,  20
+		}},
+		{{
+				-11,   2,  28,  44,  44,  28,   2, -11,
+				-27,  27,  48,  62,  62,  48,  27, -27,
+				  6,  21,  66,  66,  66,  66,  21,   6,
+				 38,  59,  54,  70,  70,  54,  59,  38,
+				 35,  35,  32,  48,  48,  32,  35,  35,
+				  0,  13,  30,  21,  21,  30,  13,   0,
+				-15, -18, -15,   0,   0, -15, -18, -15,
+				-38, -10,  -4, -16, -16,  -4, -10, -38
+		}}
+	}}
 } };
-int eval::king_psq[2][2][64]
+std::array<std::array<std::array<int, 64>, 2>, 2> eval::king_psq
 { {
-	{
-		  3,  21,  16,   8,   8,  16,  21,   3,
-		 23,  41,  49,  50,  50,  49,  41,  23,
-		 18,  80,  75,  39,  39,  75,  80,  18,
-		-40,  31,  -9, -18, -18,  -9,  31, -40,
-		-81,  -3, -24, -47, -47, -24,  -3, -81,
-		-26,  16, -13, -25, -25, -13,  16, -26,
-		 29,  52,  13, -18, -18,  13,  52,  29,
-		 20,  52,  10,  26,  26,  10,  52,  20,
-	},
-	{
-		-88, -31, -29, -37, -37, -29, -31, -88,
-		-21,  -7,  -6,  -9,  -9,  -6,  -7, -21,
-		-12,   7,   8,   0,   0,   8,   7, -12,
-		-11,   3,  16,  15,  15,  16,   3, -11,
-		-15,  -7,  11,  20,  20,  11,  -7, -15,
-		-22, -12,   1,  11,  11,   1, -12, -22,
-		-36, -28,  -9,   1,   1,  -9, -28, -36,
-		-78, -53, -30, -35, -35, -30, -53, -78,
-	}
+	{{
+		{{
+				-58,  75,  -4,  17,  17,  -4,  75, -58,
+				-44,  40,  62,  29,  29,  62,  40, -44,
+				-72,  30,  24, -13, -13,  24,  30, -72,
+			   -132, -48, -67, -76, -76, -67, -48,-132,
+			   -158, -75, -63, -70, -70, -63, -75,-158,
+				-59,  -2, -21, -26, -26, -21,  -2, -59,
+				 25,  37,  16,  -9,  -9,  16,  37,  25,
+				 28,  49,  30,  20,  20,  30,  49,  28,
+		}},
+		{{
+			   -190, -80, -26, -21, -21, -26, -80,-190,
+			    -21,  21,  34,  24,  24,  34,  21, -21,
+				 -5,  35,  38,  43,  43,  38,  35,  -5,
+				 -5,  25,  42,  49,  49,  42,  25,  -5,
+				 -8,  11,  23,  33,  33,  23,  11,  -8,
+				-22,  -9,   1,  12,  12,   1,  -9, -22,
+				-48, -33, -15,  -6,  -6, -15, -33, -48,
+				-86, -58, -35, -35, -35, -35, -58, -86
+		}}
+	}}
 } };
 
 namespace
 {
-	// fast index tables filled at startup
-
-	uint64 adjacent[8]{};
-	uint64 front_span[2][64]{};
-	uint64 king_chain[2][8]{};
-
-	// some constants
-
-	constexpr uint64 outpost_zone[]{ 0x3c3c3c000000, 0x3c3c3c0000 };
-
-	const int max_weight
-	{
-		16 * eval::phase_value[PAWNS] +
-		 4 * eval::phase_value[KNIGHTS] +
-		 4 * eval::phase_value[BISHOPS] +
-		 4 * eval::phase_value[ROOKS] +
-		 2 * eval::phase_value[QUEENS]
-	};
-
-	const std::array<std::string, 10> feature
-	{ { "pawns", "knights", "bishops", "rooks", "queens", "kings", "material", "mobility", "passed pawns", "threats" } };
-
-	static_assert(WHITE == 0 && BLACK == 1, "index");
-	static_assert(MG    == 0 && EG    == 1, "index");
-}
-
-namespace sum
-{
-	int scores(int sum[][2][2], game_stage stage)
-	{
-		// summing up scores of all evaluation features
-
-		int score{};
-		for (uint32 f{}; f < feature.size(); ++f)
-			score += sum[f][stage][WHITE] - sum[f][stage][BLACK];
-		return score;
-	}
-
-	int pieces(const board &pos, int color)
+	int sum_pieces(const board& pos, color cl)
 	{
 		// summing up phase values of all pieces on the board
 
 		int sum{};
-		for (int p{ KNIGHTS }; p <= QUEENS; ++p)
-			sum += bit::popcnt(pos.pieces[p] & pos.side[color]) * eval::phase_value[p];
+		for (piece pc : { knight, bishop, rook, queen })
+			sum += bit::popcnt(pos.pieces[pc] & pos.side[cl]) * eval::phase_value[pc];
 		return sum;
 	}
 
-	void material(int sum[][2][2])
+	int interpolate(int sc_mg, int sc_eg, int phase)
 	{
-		// initializing material sum to show correct output of the itemized evaluation
+		// interpolating the mid- & end-game scores
 
-		for (int stage{ MG }; stage <= EG; ++stage)
+		static const int max_weight
 		{
-			for (auto &sum : sum[MATERIAL][stage])
+			 16 * eval::phase_value[pawn]
+			+ 4 * eval::phase_value[knight]
+			+ 4 * eval::phase_value[bishop]
+			+ 4 * eval::phase_value[rook]
+			+ 2 * eval::phase_value[queen]
+		};
+		verify(phase >= 0);
+		int weight{ std::min(phase, max_weight) };
+		return (sc_mg * weight + sc_eg * (max_weight - weight)) / max_weight;
+	}
+
+	struct king_pressure
+	{
+		// keeping track of attacks near the enemy king which increase the pressure on the king
+		// the collected scores are used for king safety evaluation
+
+		bit64 king_zone;
+		int cnt{};
+		int sum{};
+
+		king_pressure(const board& pos, color cl) : king_zone(bit::king_zone[cl][pos.sq_king[cl]]) {}
+		void add(piece pc, bit64& targets)
+		{
+			// adding attacks
+
+			verify(pc <= queen);
+			if (bit64 king_attack{ targets & king_zone }; king_attack)
 			{
-				sum = -8 * eval::piece_value[stage][PAWNS]
-					 - 2 * eval::piece_value[stage][KNIGHTS]
-					 - 2 * eval::piece_value[stage][BISHOPS]
-					 - 2 * eval::piece_value[stage][ROOKS]
-					 - 1 * eval::piece_value[stage][QUEENS];
+				cnt += 1;
+				sum += eval::threat_king_weight[pc] * bit::popcnt(king_attack);
 			}
 		}
-	}
+	};
 }
 
-namespace material
+namespace
 {
-	// assessing some material constellations
+	// assessing material constellations
 
-	bool lone_knights(const board &pos)
+	bool opposite_bishops(const board& pos)
 	{
-		return (pos.pieces[KNIGHTS] | pos.pieces[KINGS]) == pos.side[BOTH];
+		return (pos.pieces[bishop] | pos.pieces[pawn] | pos.pieces[king]) == pos.side[both]
+			&& bit::popcnt(pos.pieces[bishop] & pos.side[white]) == 1
+			&& bit::popcnt(pos.pieces[bishop] & pos.side[black]) == 1
+			&& (pos.pieces[bishop] & bit::sq_white)
+			&& (pos.pieces[bishop] & bit::sq_black);
 	}
 
-	bool lone_bishops(const board &pos)
+	bool pawn_passed(const board& pos, square sq, color cl, color cl_x)
 	{
-		return (pos.pieces[BISHOPS] | pos.pieces[KINGS]) == pos.side[BOTH];
+		verify(pos.side[cl] & bit::set(sq));
+		verify(cl == (cl_x ^ 1));
+
+		return !(bit::fl_in_front[cl][sq] & pos.pieces[pawn]) && !(bit::front_span[cl][sq] & pos.pieces[pawn] & pos.side[cl_x]);
 	}
 
-	bool opposite_bishops(const board &pos)
-	{
-		return (pos.pieces[BISHOPS] | pos.pieces[PAWNS] | pos.pieces[KINGS]) == pos.side[BOTH]
-			&& bit::popcnt(pos.pieces[BISHOPS] & pos.side[WHITE]) == 1
-			&& bit::popcnt(pos.pieces[BISHOPS] & pos.side[BLACK]) == 1
-			&& (pos.pieces[BISHOPS] & bit::white)
-			&& (pos.pieces[BISHOPS] & bit::black);
-	}
-}
-
-namespace draw
-{
-	int scale(const board &pos, int score)
+	int draw_scale(const board& pos, int sc)
 	{
 		// scaling the score for drawish positions
 
-		int winning{ score > 0 ? WHITE : BLACK };
+		color winning{ sc > 0 ? white : black };
 
-		if (!(pos.side[winning] & pos.pieces[PAWNS])
-			&& sum::pieces(pos, winning) - sum::pieces(pos, winning ^ 1) <= eval::phase_value[KNIGHTS])
-			score /= 4;
+		if (!(pos.side[winning] & pos.pieces[pawn])
+			&& sum_pieces(pos, winning) - sum_pieces(pos, winning ^ 1) <= eval::phase_value[knight])
+			sc /= 4;
 
-		if (material::opposite_bishops(pos))
-			score = score * 3 / 4;
+		if (opposite_bishops(pos))
+			sc = sc * 3 / 4;
 
-		return score;
+		return sc;
 	}
 
-	bool obvious(const board &pos)
+	bool obvious_draw(const board& pos)
 	{
 		// recognizing positions with insufficient mating material
 		// KvK, KNvK, KBvK, KB*vKB*, KNNvK
 
-		if (material::lone_bishops(pos) && (!(bit::white & pos.pieces[BISHOPS]) || !(bit::black & pos.pieces[BISHOPS])))
+		if (pos.lone_bishops() && (!(bit::sq_white & pos.pieces[bishop]) || !(bit::sq_black & pos.pieces[bishop])))
 			return true;
 
-		if (material::lone_knights(pos) && (!(pos.pieces[KNIGHTS] & pos.side[WHITE]) || !(pos.pieces[KNIGHTS] & pos.side[BLACK])))
+		if (pos.lone_knights() && (!(pos.pieces[knight] & pos.side[white]) || !(pos.pieces[knight] & pos.side[black])))
 			return true;
 
 		return false;
 	}
 }
 
-namespace score
-{
-	int interpolate(int sum[][2][2], int &phase)
-	{
-		// interpolating the mid- & end-game scores
-
-		assert(phase >= 0);
-		auto weight{ phase <= max_weight ? phase : max_weight };
-		return (sum::scores(sum, MG) * weight + sum::scores(sum, EG) * (max_weight - weight)) / max_weight;
-	}
-}
-
-namespace file
-{
-	bool open(const board &pos, int sq, int color, int file)
-	{
-		// checking whether a file is open or not
-
-		return !(front_span[color][sq] & pos.pieces[PAWNS] & bit::file[file]);
-	}
-}
-
-namespace path
-{
-	uint64 blocked(const board &pos, int sq, int color, int xcolor)
-	{
-		// checking whether the path in front is blocked, directly or indirectly
-
-		return front_span[color][sq] & pos.pieces[PAWNS] & pos.side[xcolor];
-	}
-
-	bool is_passed(const board &pos, int sq, int color, int xcolor, int file)
-	{
-		// defining passed pawns
-		
-		assert(index::file(sq) == file);
-		assert(pos.side[color] & (1ULL << sq));
-		assert(color == (xcolor ^ 1));
-
-		return file::open(pos, sq, color, file) && !blocked(pos, sq, color, xcolor);
-	}
-}
-
-namespace output
-{
-	void align(double score)
-	{
-		// aligning all scores to create a itemized table after the "eval" command
-
-		score /= 100.0;
-		sync::cout.precision(2);
-		sync::cout << std::fixed
-			<< (score < 0.0 ? "" : " ")
-			<< (std::abs(score) >= 10.0 ? "" : " ")
-			<< score << " ";
-	}
-}
-
-namespace king_threat
-{
-	void add(piece_index p, uint64 &targets, uint64 &king_zone, int &threat_count, int &threat_sum)
-	{
-		// adding attacks of the king for king safety evaluation
-
-		assert(p <= QUEENS);
-		auto king_zone_attack{ targets & king_zone };
-		if  (king_zone_attack)
-		{
-			threat_count += 1;
-			threat_sum   += eval::king_threat_weight[p] * bit::popcnt(king_zone_attack);
-		}
-	}
-}
-
 namespace eval
 {
-	void threats(const board &pos, int sum[][2][2], uint64 attacks[][6], uint64 attacks_final[], int color)
+	void passed_pawns(const board& pos, eval_score& sum, all_attacks& att_by_1, kingpawn_hash::hash& entry, color cl)
 	{
-		// evaluating threats against pieces & pawns
-		// inspirational credits go to the Ethereal-authors (https://github.com/AndyGrant/Ethereal)
+		// evaluating passed pawns (~157 Elo)
+		// this is the only pawn-related evaluation that cannot be stored in the king-pawn hash table
 
-		auto xcolor{ color ^ 1 };
-		int  threat{};
-
-		// penalizing threats against unsupported pawns
-
-		threat = bit::popcnt(pos.pieces[PAWNS] & pos.side[color] & ~attacks_final[color] & attacks_final[xcolor]);
-		sum[THREATS][MG][color] += threat * pawn_threat[MG];
-		sum[THREATS][EG][color] += threat * pawn_threat[EG];
-
-		// penalizing threats against minor pieces
-
-		threat = bit::popcnt((pos.pieces[KNIGHTS] | pos.pieces[BISHOPS]) & pos.side[color] & attacks[xcolor][PAWNS]);
-		sum[THREATS][MG][color] += threat * minor_threat[MG];
-		sum[THREATS][EG][color] += threat * minor_threat[EG];
-
-		// penalizing threats against the queen
-
-		auto queens{ pos.pieces[QUEENS] & pos.side[color] };
-		if (queens & attacks_final[xcolor])
-		{
-			sum[THREATS][MG][color] += queen_threat[MG];
-			sum[THREATS][EG][color] += queen_threat[EG];
-
-			if (queens & (attacks[xcolor][KNIGHTS] | attacks[xcolor][BISHOPS]))
-			{
-				sum[THREATS][MG][color] += queen_threat_minor[MG];
-				sum[THREATS][EG][color] += queen_threat_minor[EG];
-			}
-		}
-	}
-
-	void pawn_extended(const board &pos, int sum[][2][2], uint64 attacks_final[], pawn::hash &entry, int color)
-	{
-		// evaluating everything pawn-related that cannot be stored in the pawn hash-table
-		// adding the hash-table information first
-
-		sum[PAWNS][MG][color] += entry.score[MG][color];
-		sum[PAWNS][EG][color] += entry.score[EG][color];
-
-		assert(std::abs(sum[PAWNS][MG][color]) < SCORE_LONGEST_MATE);
-		assert(std::abs(sum[PAWNS][EG][color]) < SCORE_LONGEST_MATE);
-
-		// pawn formations
-
-		auto xcolor{ color ^ 1 };
-		auto k_file{ index::file(pos.sq_king[color]) };
-
-		auto pawns_friend{ pos.pieces[PAWNS] & pos.side[color] };
-		auto pawns_enemy { pos.pieces[PAWNS] & pos.side[xcolor] };
-		auto base_chain  { king_chain[color][k_file] };
-
-		while (base_chain)
-		{
-			auto sq{ bit::scan(base_chain) };
-			auto file{ index::file(sq) };
-			assert(relative::rank(index::rank(sq), color) == R1);
-
-			// pawn shield
-
-			auto pawn{ attack::by_slider<ROOK>(sq, pawns_friend) & pawns_friend & bit::file[file] };
-			assert(bit::popcnt(pawn) <= 1);
-
-			auto score{ pawn ? shield_rank[color][index::rank(bit::scan(pawn))] : shield_rank[WHITE][R8] };
-			sum[KINGS][MG][color] += (file == k_file) ? score * 2 : score;
-
-			// pawn storm
-
-			pawn = attack::by_slider<ROOK>(sq, pawns_enemy) & pawns_enemy & bit::file[file];
-			assert(bit::popcnt(pawn) <= 1);
-
-			score = { pawn ? storm_rank[xcolor][index::rank(bit::scan(pawn))] : 0 };
-			sum[PAWNS][MG][xcolor] += (bit::shift(pawn, shift::push[xcolor]) & pawns_friend) ? score : score * 2;
-
-			base_chain &= base_chain - 1;
-		}
-
-		// passed pawn
-
-		auto passed{ entry.passed[color] };
+		color  cl_x{ cl ^ 1 };
+		bit64  passed{ entry.passed[cl] };
 		while (passed)
 		{
-			auto sq{ static_cast<int>(bit::scan(passed)) };
-			auto rank{ index::rank(sq) };
-			auto file{ index::file(sq) };
+			square sq{ bit::scan(passed) };
+			rank   rk{ type::rk_of(sq) };
 
 			// assigning a big bonus for a normal passed pawn
 
-			auto mg_bonus{ passed_rank[color][rank] };
-			auto eg_bonus{ passed_rank[color][rank] };
+			int mg_bonus{ passed_rank[cl][rk] };
+			int eg_bonus{ passed_rank[cl][rk] };
 
 			// adding a king distance bonus
 
-			auto stop_sq{ sq + shift::push[color * 2] };
-			auto distance_friend{ square::distance(stop_sq, pos.sq_king[color]) };
-			auto distance_enemy { square::distance(stop_sq, pos.sq_king[xcolor]) };
+			square sq_stop{ sq + shift::push1x[0] * (cl == white ? 1 : -1) };
+			int dist_cl   { type::sq_distance(sq_stop, pos.sq_king[cl]) };
+			int dist_cl_x { type::sq_distance(sq_stop, pos.sq_king[cl_x]) };
 
-			mg_bonus += king_distance_friend[MG] * distance_friend + king_distance_enemy[MG] * distance_enemy;
-			eg_bonus += king_distance_friend[EG] * distance_friend + king_distance_enemy[EG] * distance_enemy;
+			mg_bonus += king_distance_cl[mg] * dist_cl + king_distance_cl_x[mg] * dist_cl_x;
+			eg_bonus += king_distance_cl[eg] * dist_cl + king_distance_cl_x[eg] * dist_cl_x;
 
-			// adding X-ray attacks by major pieces to the attack- and defense-table
+			// adding X-ray attacks by major pieces behind the passed pawn to the attack- and defense-table
 
-			auto path { bit::file[file] & front_span[color][sq] };
-			auto major{ bit::file[file] & front_span[xcolor][sq] & (pos.pieces[ROOKS] | pos.pieces[QUEENS]) };
+			bit64 attacked{ att_by_1[cl_x] };
+			bit64 defended{ att_by_1[cl] };
 
-			auto attacked{ attacks_final[xcolor] };
-			auto defended{ attacks_final[color] };
-
-			if (major && (major & attack::by_slider<ROOK>(sq, pos.side[BOTH])))
+			bit64 major{ bit::fl_in_front[cl_x][sq] & (pos.pieces[rook] | pos.pieces[queen]) };
+			if (major && (major & attack::by_slider<rook>(sq, pos.side[both])))
 			{
-				if (major & pos.side[color])
-					defended |= path;
+				if (major & pos.side[cl])
+					defended |= bit::fl_in_front[cl][sq];
 				else
-					attacked |= path;
+					attacked |= bit::fl_in_front[cl][sq];
 			}
 
 			// penalizing if the path to promotion is blocked, attacked or undefended
 
-			auto blocked_path{ path & (pos.side[xcolor] | (attacked & ~defended)) };
-
-			if (blocked_path)
+			if (bit64 blocked_path{ bit::fl_in_front[cl][sq] & (pos.side[cl_x] | (attacked & ~defended)) }; blocked_path)
 			{
-				auto sq_cnt{ bit::popcnt(blocked_path) };
-				assert(sq_cnt <= 6);
+				int blocked{ bit::popcnt(blocked_path) };
+				verify(blocked <= 6);
 
-				mg_bonus /= sq_cnt + 2;
-				eg_bonus /= sq_cnt + 1;
+				mg_bonus /= blocked + 2;
+				eg_bonus /= blocked + 1;
 			}
 
-			sum[PASSED][MG][color] += mg_bonus;
-			sum[PASSED][EG][color] += eg_bonus;
-
+			sum[mg][cl] += mg_bonus;
+			sum[eg][cl] += eg_bonus;
 			passed &= passed - 1;
 		}
 	}
 
-	void pawn_base(const board &pos, pawn::hash &entry, uint64 attacks[][6])
+	void pawns(const board& pos, kingpawn_hash::hash& entry)
 	{
-		// evaluating everything pawn-related that can be stored in the pawn hash table
+		// evaluating everything pawn-related that can be stored in the king-pawn hash table
 
-		for (int color{ WHITE }; color <= BLACK; ++color)
+		for (color cl : {white, black})
 		{
-			auto xcolor{ color ^ 1 };
-			auto pawns{ pos.pieces[PAWNS] & pos.side[color] };
-			auto pawns_friend{ pawns };
+			color cl_x{ cl ^ 1 };
+			file  fl_king{ type::fl_of(pos.sq_king[cl]) };
+			entry.attack[cl_x] = attack::by_pawns(pos.pieces[pawn] & pos.side[cl_x], cl_x);
+
+			bit64 pawns{ pos.pieces[pawn] & pos.side[cl] };
+			bit64 pawns_cl{ pawns };
+			bit64 pawns_cl_x{ pos.pieces[pawn] & pos.side[cl_x] };
+
+			// pawn formations relative to the king
+
+			for (file fl : { file(fl_king + 1), fl_king, file(fl_king - 1) })
+			{
+				if (!type::fl(fl)) continue;
+				square sq{ type::sq_of(type::rel_rk_of(rank_1, cl), fl) };
+
+				// pawn shield (~41 Elo)
+
+				bit64 sq_pawn{ attack::by_slider<rook>(sq, pawns_cl) & bit::file[fl] & pawns_cl };
+				verify(bit::popcnt(sq_pawn) <= 1);
+
+				int sc{ sq_pawn ? shield_rank[cl][type::rk_of(bit::scan(sq_pawn))] : shield_rank[white][rank_8] };
+				entry.score[mg][cl] += (fl == fl_king) ? sc * 2 : sc;
+
+				// pawn storm (~0 Elo)
+
+				sq_pawn = attack::by_slider<rook>(sq, pawns_cl_x) & pawns_cl_x & bit::file[fl];
+				verify(bit::popcnt(sq_pawn) <= 1);
+
+				sc = { sq_pawn ? storm_rank[cl_x][type::rk_of(bit::scan(sq_pawn))] : 0 };
+				entry.score[mg][cl_x] += (bit::shift(sq_pawn, shift::push1x[cl_x]) & pawns_cl) ? sc : sc * 2;
+			}
 
 			while (pawns)
 			{
-				auto sq{ static_cast<int>(bit::scan(pawns)) };
-				auto sq_bit{ 1ULL << sq };
-				auto sq_stop{ bit::shift(sq_bit, shift::push[color]) };
-				auto file{ index::file(sq) };
-				auto rank{ index::rank(sq) };
+				square sq{ bit::scan(pawns) };
+				bit64 sq_bit{ bit::set(sq) };
+				bit64 sq_stop{ bit::shift(sq_bit, shift::push1x[cl]) };
+				file fl{ type::fl_of(sq) };
+				rank rk{ type::rk_of(sq) };
 
 				// PSQT
 
-				entry.score[MG][color] += pawn_psq[xcolor][MG][sq] + piece_value[MG][PAWNS];
-				entry.score[EG][color] += pawn_psq[xcolor][EG][sq] + piece_value[EG][PAWNS];
+				entry.score[mg][cl] += pawn_psq[cl_x][mg][sq] + piece_value[mg][pawn];
+				entry.score[eg][cl] += pawn_psq[cl_x][eg][sq] + piece_value[eg][pawn];
 
-				// penalizing isolated pawns
+				// finding passed pawn
 
-				if (!(adjacent[file] & pawns_friend))
+				if (pawn_passed(pos, sq, cl, cl_x))
+					entry.passed[cl] |= sq_bit;
+
+				// penalizing isolated pawn (~12 Elo)
+
+				if (!(bit::fl_adjacent[fl] & pawns_cl))
 				{
-					entry.score[MG][color] += isolated[MG];
-					entry.score[EG][color] += isolated[EG];
+					entry.score[mg][cl] += isolated[mg];
+					entry.score[eg][cl] += isolated[eg];
 				}
 
-				// penalizing backward pawns
+				// penalizing backward pawn (~7 Elo)
 
-				if ((attacks[xcolor][PAWNS] & sq_stop) && !((front_span[xcolor][bit::scan(sq_stop)] & pawns_friend) ^ sq_bit))
+				if ((entry.attack[cl_x] & sq_stop) && !((bit::front_span[cl_x][bit::scan(sq_stop)] & pawns_cl) ^ sq_bit))
 				{
-					entry.score[MG][color] += backward[MG];
-					entry.score[EG][color] += backward[EG];
+					entry.score[mg][cl] += backward[mg];
+					entry.score[eg][cl] += backward[eg];
 				}
 
-				// rewarding connected pawns
+				// rewarding connected pawn (~40 Elo)
 
-				else if (adjacent[file] & pawns_friend & (bit::rank[rank] | bit::shift(bit::rank[rank], shift::push[xcolor])))
+				else if (bit::connected[cl][sq] & pawns_cl)
 				{
-					entry.score[MG][color] += connected[color][MG][rank];
-					entry.score[EG][color] += connected[color][EG][rank];
+					entry.score[mg][cl] += connected[cl][mg][rk];
+					entry.score[eg][cl] += connected[cl][eg][rk];
 				}
-
-				// finding passed pawns
-
-				if (path::is_passed(pos, sq, color, xcolor, file))
-					entry.passed[color] |= sq_bit;
 
 				pawns &= pawns - 1;
 			}
 		}
 	}
 
-	void pawns(const board &pos, int sum[][2][2], uint64 attacks[][6], uint64 attacks_final[], pawn &hash)
+	void tactics(const board& pos, eval::eval_score& sum, const attack_list& att, const all_attacks& att_by_1, color cl)
 	{
-		// evaluating pawns
+		// penalizing tactical threats (~12 Elo)
 
-		if (!pos.pieces[PAWNS]) return;
-		assert(pos.pawn_key != 0ULL);
+		color cl_x{ cl ^ 1 };
+		bit64 minors{ pos.pieces[knight] | pos.pieces[bishop] };
+		bit64 minor_attacks{ att[cl_x][knight] | att[cl_x][bishop] };
+		int threat{};
 
-		// storing into & probing the pawn hash table
-		// the table provides only some basic evaluation
+		// penalizing threats against unsupported pawns
 
-		pawn::hash new_entry{};
-		pawn::hash &entry{ hash.table ? hash.table[pos.pawn_key & pawn::mask] : new_entry };
-		if (entry.key != pos.pawn_key)
-		{
-			entry = pawn::hash{};
-			pawn_base(pos, entry, attacks);
-			entry.key = pos.pawn_key;
-		}
+		threat = bit::popcnt(pos.pieces[pawn] & pos.side[cl] & (att_by_1[cl_x] & ~att_by_1[cl]));
+		sum[mg][cl] += threat * threat_pawn[mg];
+		sum[eg][cl] += threat * threat_pawn[eg];
 
-		// extending the pawn evaluation
+		// penalizing threats against minor pieces
 
-		pawn_extended(pos, sum, attacks_final, entry, WHITE);
-		pawn_extended(pos, sum, attacks_final, entry, BLACK);
+		threat = bit::popcnt(minors & pos.side[cl] & minor_attacks);
+		sum[mg][cl] += threat * threat_minor[mg];
+		sum[eg][cl] += threat * threat_minor[eg];
+
+		// penalizing threats against rooks
+
+		threat = bit::popcnt(pos.pieces[rook] & pos.side[cl] & minor_attacks);
+		sum[mg][cl] += threat * threat_rook[mg];
+		sum[eg][cl] += threat * threat_rook[eg];
+
+		// penalizing threats against all pieces from pawns
+
+		threat = bit::popcnt((minors | pos.pieces[rook] | pos.pieces[queen]) & pos.side[cl] & att[cl_x][pawn]);
+		sum[mg][cl] += threat * threat_piece_by_pawn[mg];
+		sum[eg][cl] += threat * threat_piece_by_pawn[eg];
+
+		// penalizing threats against queens from minor pieces
+
+		threat = bit::popcnt(pos.pieces[queen] & pos.side[cl] & minor_attacks);
+		sum[mg][cl] += threat * threat_queen_by_minor[mg];
+		sum[eg][cl] += threat * threat_queen_by_minor[eg];
+
+		// penalizing threats against queens from rooks
+
+		threat = bit::popcnt(pos.pieces[queen] & pos.side[cl] & att[cl_x][rook]);
+		sum[mg][cl] += threat * threat_queen_by_rook[mg];
+		sum[eg][cl] += threat * threat_queen_by_rook[eg];
 	}
 
-	void pieces(const board &pos, int sum[][2][2], uint64 attacks[][6], int &phase, int color)
+	void king_safety(const board& pos, eval_score& sum, const attack_list& att, const all_attacks& att_by_1, const all_attacks& att_by_2,
+		king_pressure& pressure, color cl)
+	{
+		// evaluating king safety threats
+
+		color cl_x{ cl ^ 1 };
+		bit64 weak_sq{  att_by_1[cl] & (~att_by_1[cl_x] | att[cl_x][queen] | att[cl_x][king]) & ~att_by_2[cl_x] };
+		bit64 safe_sq{ (~att_by_1[cl_x] | (weak_sq & att_by_2[cl])) & ~pos.side[cl] };
+
+		bit64 bishop_reach{ attack::by_slider<bishop>(pos.sq_king[cl_x], pos.side[both]) };
+		bit64 rook_reach  { attack::by_slider<rook>  (pos.sq_king[cl_x], pos.side[both]) };
+
+		// if the enemy king is attacked by at least 2 pieces, it is considered as threated
+
+		if (pressure.cnt >= 2)
+		{
+			// the king threat score is consolidated by all attacks of the king zone (~35 Elo)
+			// if no queen is involved in the attack, the score is halved
+
+			int weight{ pressure.sum };
+			weight /= (pos.pieces[queen] & pos.side[cl]) ? 1 : 2;
+			sum[mg][cl_x] -= threat_king[std::min(weight, 59)];
+
+			// weak squares around the king are an addition to the threat
+
+			sum[mg][cl_x] -= bit::popcnt(pressure.king_zone &  weak_sq) * weak_king_sq;
+		}
+
+		// the enemy king is also considered threatened if a piece can give a safe check on the next move (~42 Elo)
+		// safe check threat of knights
+
+		int cnt{ bit::popcnt(bit::pc_attack[knight][pos.sq_king[cl_x]] & att[cl][knight] & safe_sq) };
+		sum[mg][cl_x] -= threat_king_by_check[knight] * cnt;
+
+		// safe check threat of bishops
+
+		cnt = bit::popcnt(bishop_reach & att[cl][bishop] & safe_sq);
+		sum[mg][cl_x] -= threat_king_by_check[bishop] * cnt;
+
+		// safe check threat of rooks
+
+		cnt = bit::popcnt(rook_reach & att[cl][rook] & safe_sq);
+		sum[mg][cl_x] -= threat_king_by_check[rook] * cnt;
+
+		// safe check threat of queens
+
+		cnt = bit::popcnt((bishop_reach | rook_reach) & att[cl][queen] & safe_sq);
+		sum[mg][cl_x] -= threat_king_by_check[queen] * cnt;
+	}
+
+	int initiative(const board &pos, int sc_eg, const kingpawn_hash::hash& entry)
+	{
+		// evaluating the initiative of the side that has the advantage (~0 Elo)
+		// the computed score is applied as a correction
+		// idea from Stockfish:
+		// https://github.com/official-stockfish/Stockfish
+
+		int outflanking{  std::abs(type::fl_of(pos.sq_king[white]) - type::fl_of(pos.sq_king[black]))
+					    - std::abs(type::rk_of(pos.sq_king[white]) - type::rk_of(pos.sq_king[black])) };
+		int passed_pawns{ bit::popcnt(entry.passed[white] | entry.passed[black]) };
+
+		bool pawns_on_both_flanks{ (pos.pieces[pawn] & bit::half_east) && (pos.pieces[pawn] & bit::half_west) };
+		bool almost_unwinnable{ outflanking < 0 && !passed_pawns && !pawns_on_both_flanks };
+
+		int sc_complexity =
+			+ complexity[0] * bit::popcnt(pos.pieces[pawn])
+			+ complexity[1] * outflanking
+			+ complexity[2] * pawns_on_both_flanks
+			+ complexity[3] * pos.lone_pawns()
+			+ complexity[4] * almost_unwinnable
+			+ complexity[5];
+
+		// if the score is positive, white has the advantage, otherwise black
+		// the score is also not allowed to change sign after the correction
+
+		return ((sc_eg > 0) - (sc_eg < 0)) * std::max(sc_complexity, -std::abs(sc_eg));
+	}
+
+	void pieces(const board& pos, eval_score& sum, attack_list& att, all_attacks& att_by_1, all_attacks& att_by_2,
+		king_pressure& pressure, int& phase, color cl)
 	{
 		// evaluating all pieces except pawns
+		// starting by initializing king pressure & finding all pins to restrict piece mobility
 
-		auto xcolor{ color ^ 1 };
+		color cl_x{ cl ^ 1 };
+		bit64 pawns_cl  { pos.pieces[pawn] & pos.side[cl] };
+		bit64 pawns_cl_x{ pos.pieces[pawn] & pos.side[cl_x] };
 
-		// initializing threats against the king
+		// defining the mobility area
 
-		auto king_zone{ attack::king_map[pos.sq_king[xcolor]] | bit::shift(attack::king_map[pos.sq_king[xcolor]], shift::push[xcolor]) };
-		struct attack_threat
-		{
-			int count{};
-			int sum{};
-		} threat;
-
-		// finding all pins to restrict piece mobility
-
-		uint64 pin_moves[64]{};
-		attack::pins(pos, color, color, pin_moves);
+		bit64 blocked_pawns{ pawns_cl & bit::shift(pos.side[both], shift::push1x[cl_x]) };
+		bit64 mobility_area{ ~(blocked_pawns | ((pos.pieces[king] | pos.pieces[queen]) & pos.side[cl]) | att[cl_x][pawn]) };
 
 		// starting with the evaluation
 		// knights
 
-		auto pieces{ pos.side[color] & pos.pieces[KNIGHTS] };
+		bit64 pieces{ pos.side[cl] & pos.pieces[knight] };
 		while (pieces)
 		{
-			auto sq{ bit::scan(pieces) };
+			square sq{ bit::scan(pieces) };
 
-			sum[KNIGHTS][MG][color] += knight_psq[xcolor][MG][sq] + piece_value[MG][KNIGHTS];
-			sum[KNIGHTS][EG][color] += knight_psq[xcolor][EG][sq] + piece_value[EG][KNIGHTS];
+			sum[mg][cl] += knight_psq[cl_x][mg][sq] + piece_value[mg][knight];
+			sum[eg][cl] += knight_psq[cl_x][eg][sq] + piece_value[eg][knight];
 
 			// generating attacks
 
+			bit64 targets{ bit::pc_attack[knight][sq] & mobility_area };
+			att[cl][knight] |= targets;
+			att_by_2[cl]    |= targets & att_by_1[cl];
+			att_by_1[cl]    |= targets;
+			pressure.add(knight, targets);
 
-			auto targets{ attack::knight_map[sq] & ~pin_moves[sq] };
-			attacks[color][KNIGHTS] |= targets;
+			// rewarding outposts (~6 Elo)
 
-			targets &= ~((attacks[xcolor][PAWNS] & ~pos.side[BOTH]) | (pos.side[color] & pos.pieces[PAWNS]));
-			king_threat::add(KNIGHTS, targets, king_zone, threat.count, threat.sum);
-
-			// rewarding outposts
-
-			if ((1ULL << sq) & outpost_zone[color] & attacks[color][PAWNS])
+			if (bit::set(sq) & bit::outpost_zone[cl] & att[cl][pawn])
 			{
-				auto weight{ 1 };
+				int weight{ 1 };
 
-				if (!(front_span[color][sq] & ~bit::file[index::file(sq)] & pos.pieces[PAWNS] & pos.side[xcolor]))
+				if (!(bit::front_span[cl][sq] & ~bit::file[type::fl_of(sq)] & pawns_cl_x))
 					weight += 3;
 
-				sum[KNIGHTS][MG][color] += knight_outpost[MG] * weight;
-				sum[KNIGHTS][EG][color] += knight_outpost[EG] * weight;
+				sum[mg][cl] += knight_outpost[mg] * weight;
+				sum[eg][cl] += knight_outpost[eg] * weight;
 			}
 
-			// mobility
+			// mobility (~53 Elo)
 
-			auto count{ bit::popcnt(targets) };
-			sum[MOBILITY][MG][color] += knight_mobility[MG][count];
-			sum[MOBILITY][EG][color] += knight_mobility[EG][count];
+			int pop{ bit::popcnt(targets) };
+			sum[mg][cl] += knight_mobility[mg][pop];
+			sum[eg][cl] += knight_mobility[eg][pop];
 
-			phase += phase_value[KNIGHTS];
+			// penalizing long distance to kings (~0 Elo)
+
+			int king_distance{ std::min(type::sq_distance(sq, pos.sq_king[cl]), type::sq_distance(sq, pos.sq_king[cl_x])) };
+			if (king_distance > 3)
+				sum[mg][cl] += knight_distance_kings[king_distance - 4];
+
+			phase += phase_value[knight];
 			pieces &= pieces - 1;
 		}
 
-		// bishops
+		// bishop
 
-		pieces = pos.side[color] & pos.pieces[BISHOPS];
+		pieces = pos.side[cl] & pos.pieces[bishop];
 		while (pieces)
 		{
-			auto sq{ bit::scan(pieces) };
+			square sq{ bit::scan(pieces) };
 
-			sum[BISHOPS][MG][color] += bishop_psq[xcolor][MG][sq] + piece_value[MG][BISHOPS];
-			sum[BISHOPS][EG][color] += bishop_psq[xcolor][EG][sq] + piece_value[EG][BISHOPS];
+			sum[mg][cl] += bishop_psq[cl_x][mg][sq] + piece_value[mg][bishop];
+			sum[eg][cl] += bishop_psq[cl_x][eg][sq] + piece_value[eg][bishop];
 
 			// generating attacks
 
-			auto targets{ attack::by_slider<BISHOP>(sq, pos.side[BOTH] & ~(pos.pieces[QUEENS] & pos.side[color])) & ~pin_moves[sq] };
-			attacks[color][BISHOPS] |= targets;
+			bit64 targets{ attack::by_slider<bishop>(sq, pos.side[both] ^ pos.pieces[queen]) & mobility_area };
+			att[cl][bishop] |= targets;
+			att_by_2[cl]    |= targets & att_by_1[cl];
+			att_by_1[cl]    |= targets;
+			pressure.add(bishop, targets);
 
-			targets &= ~(pos.side[color] & pos.pieces[PAWNS]);
-			king_threat::add(BISHOPS, targets, king_zone, threat.count, threat.sum);
-
-			// bishop pair bonus
+			// bishop pair bonus (~16 Elo)
 
 			if (pieces & (pieces - 1))
 			{
-				sum[BISHOPS][MG][color] += bishop_pair[MG];
-				sum[BISHOPS][EG][color] += bishop_pair[EG];
+				sum[mg][cl] += bishop_pair[mg];
+				sum[eg][cl] += bishop_pair[eg];
 			}
 
-			// mobility
+			// mobility (~82 Elo)
 
-			auto count{ bit::popcnt(targets) };
-			sum[MOBILITY][MG][color] += bishop_mobility[MG][count];
-			sum[MOBILITY][EG][color] += bishop_mobility[EG][count];
+			int pop{ bit::popcnt(targets) };
+			sum[mg][cl] += bishop_mobility[mg][pop];
+			sum[eg][cl] += bishop_mobility[eg][pop];
 
-			phase += phase_value[BISHOPS];
+			// penalty for pawns on same colored squares (~8 Elo)
+
+			if (bit::set(sq) & bit::sq_white)
+			{
+				int pawns{ bit::popcnt(pawns_cl & bit::sq_white) };
+				sum[mg][cl] += bishop_color_pawns[mg] * pawns;
+				sum[eg][cl] += bishop_color_pawns[eg] * pawns;
+			}
+			else
+			{
+				verify(bit::set(sq) & bit::sq_black);
+				int pawns{ bit::popcnt(pawns_cl & bit::sq_black) };
+				sum[mg][cl] += bishop_color_pawns[mg] * pawns;
+				sum[eg][cl] += bishop_color_pawns[eg] * pawns;
+			}
+
+			// penalty if the enemy half of the board cannot be reached (~19 Elo)
+
+			if (!(targets & bit::board_half[cl_x]))
+			{
+				sum[mg][cl] += bishop_trapped[mg];
+				sum[eg][cl] += bishop_trapped[eg];
+			}
+
+			phase += phase_value[bishop];
 			pieces &= pieces - 1;
 		}
 
-		// rooks
+		// rook
 
-		pieces = pos.side[color] & pos.pieces[ROOKS];
+		pieces = pos.side[cl] & pos.pieces[rook];
 		while (pieces)
 		{
-			auto sq{ bit::scan(pieces) };
+			square sq{ bit::scan(pieces) };
 
-			sum[ROOKS][MG][color] += rook_psq[xcolor][MG][sq] + piece_value[MG][ROOKS];
-			sum[ROOKS][EG][color] += rook_psq[xcolor][EG][sq] + piece_value[EG][ROOKS];
+			sum[mg][cl] += rook_psq[cl_x][mg][sq] + piece_value[mg][rook];
+			sum[eg][cl] += rook_psq[cl_x][eg][sq] + piece_value[eg][rook];
 
 			// generating attacks
 
-			auto targets{ attack::by_slider<ROOK>(sq, pos.side[BOTH] & ~((pos.pieces[QUEENS] | pos.pieces[ROOKS]) & pos.side[color]))
-				& ~pin_moves[sq] };
-			attacks[color][ROOKS] |= targets;
+			bit64 targets{ attack::by_slider<rook>(sq, pos.side[both] & ~(pos.pieces[queen] | (pos.pieces[rook] & pos.side[cl]))) & mobility_area };
+			att[cl][rook] |= targets;
+			att_by_2[cl]  |= targets & att_by_1[cl];
+			att_by_1[cl]  |= targets;
+			pressure.add(rook, targets);
 
-			targets &= ~(pos.side[color] & pos.pieces[PAWNS]);
-			king_threat::add(ROOKS, targets, king_zone, threat.count, threat.sum);
+			// being on a open or semi-open file (~30 Elo)
 
-			// being on a open or semi-open file
-
-			if (!(bit::file[index::file(sq)] & pos.pieces[PAWNS] & pos.side[color]))
+			bit64 fl_rook{ bit::file[type::fl_of(sq)] };
+			if (!(fl_rook & pawns_cl))
 			{
-				auto weight{ 1 };
+				int weight{ 1 };
 
-				if (!(bit::file[index::file(sq)] & pos.pieces[PAWNS]))
-					weight += 1;
-				if (bit::file[index::file(sq)] & pos.pieces[KINGS] & pos.side[xcolor])
+				if (!(fl_rook & pos.pieces[pawn]))
 					weight += 1;
 
-				sum[ROOKS][MG][color] += rook_open_file[MG] * weight;
-				sum[ROOKS][EG][color] += rook_open_file[EG] * weight;
+				if (fl_rook & pos.pieces[king] & pos.side[cl_x])
+					weight += 1;
 
+				sum[mg][cl] += rook_open_file[mg] * weight;
+				sum[eg][cl] += rook_open_file[eg] * weight;
 			}
 
-			// being on the 7th rank
+			// being on the 7th rank (~19 Elo)
 
-			if (relative::rank(index::rank(sq), color) == R7)
+			if (type::rel_rk_of(type::rk_of(sq), cl) == rank_7)
 			{
-				if (bit::rank[relative::rank(R7, color)] & pos.pieces[PAWNS] & pos.side[xcolor]
-					|| bit::rank[relative::rank(R8, color)] & pos.pieces[KINGS] & pos.side[xcolor])
+				if (bit::rank[type::rel_rk_of(rank_7, cl)] & pawns_cl_x
+					|| bit::rank[type::rel_rk_of(rank_8, cl)] & pos.pieces[king] & pos.side[cl_x])
 				{
-					sum[ROOKS][MG][color] += major_on_7th[MG];
-					sum[ROOKS][EG][color] += major_on_7th[EG];
+					sum[mg][cl] += major_on_7th[mg];
+					sum[eg][cl] += major_on_7th[eg];
 				}
 			}
 
-			// mobility
+			// mobility (~41 Elo)
 
-			auto count{ bit::popcnt(targets) };
-			sum[MOBILITY][MG][color] += rook_mobility[MG][count];
-			sum[MOBILITY][EG][color] += rook_mobility[EG][count];
+			int pop{ bit::popcnt(targets) };
+			sum[mg][cl] += rook_mobility[mg][pop];
+			sum[eg][cl] += rook_mobility[eg][pop];
 
-			phase += phase_value[ROOKS];
+			phase += phase_value[rook];
 			pieces &= pieces - 1;
 		}
 
-		// queens
+		// queen
 
-		pieces = pos.side[color] & pos.pieces[QUEENS];
+		pieces = pos.side[cl] & pos.pieces[queen];
 		while (pieces)
 		{
-			auto sq{ bit::scan(pieces) };
+			square sq{ bit::scan(pieces) };
 
-			sum[QUEENS][MG][color] += queen_psq[xcolor][MG][sq] + piece_value[MG][QUEENS];
-			sum[QUEENS][EG][color] += queen_psq[xcolor][EG][sq] + piece_value[EG][QUEENS];
+			sum[mg][cl] += queen_psq[cl_x][mg][sq] + piece_value[mg][queen];
+			sum[eg][cl] += queen_psq[cl_x][eg][sq] + piece_value[eg][queen];
 
 			// generating attacks
 
-			auto targets{ attack::by_slider<QUEEN>(sq, pos.side[BOTH]) & ~pin_moves[sq] };
-			attacks[color][QUEENS] |= targets;
+			bit64 targets{ attack::by_slider<queen>(sq, pos.side[both]) & mobility_area };
+			att[cl][queen] |= targets;
+			att_by_2[cl]   |= targets & att_by_1[cl];
+			att_by_1[cl]   |= targets;
+			pressure.add(queen, targets);
 
-			targets &= ~(pos.side[color] & pos.pieces[PAWNS]);
-			king_threat::add(QUEENS, targets, king_zone, threat.count, threat.sum);
+			// being on the 7th rank (~3 Elo)
 
-			// being on the 7th rank
-
-			if (relative::rank(index::rank(sq), color) == R7)
+			if (type::rel_rk_of(type::rk_of(sq), cl) == rank_7)
 			{
-				if (bit::rank[relative::rank(R7, color)] & pos.pieces[PAWNS] & pos.side[xcolor]
-					|| bit::rank[relative::rank(R8, color)] & pos.pieces[KINGS] & pos.side[xcolor])
+				if (bit::rank[type::rel_rk_of(rank_7, cl)] & pawns_cl_x
+					|| bit::rank[type::rel_rk_of(rank_8, cl)] & pos.pieces[king] & pos.side[cl_x])
 				{
-					sum[QUEENS][MG][color] += major_on_7th[MG];
-					sum[QUEENS][EG][color] += major_on_7th[EG];
+					sum[mg][cl] += major_on_7th[mg];
+					sum[eg][cl] += major_on_7th[eg];
 				}
 			}
 
-			// mobility
+			// mobility (~17 Elo)
 
-			auto count{ bit::popcnt(targets) };
-			sum[MOBILITY][MG][color] += queen_mobility[MG][count];
-			sum[MOBILITY][EG][color] += queen_mobility[EG][count];
+			int count{ bit::popcnt(targets) };
+			sum[mg][cl] += queen_mobility[mg][count];
+			sum[eg][cl] += queen_mobility[eg][count];
 
-			phase += phase_value[QUEENS];
+			phase += phase_value[queen];
 			pieces &= pieces - 1;
 		}
 
 		// king
 
 		{
-			sum[KINGS][MG][color] += king_psq[xcolor][MG][pos.sq_king[color]] + piece_value[MG][KINGS];
-			sum[KINGS][EG][color] += king_psq[xcolor][EG][pos.sq_king[color]] + piece_value[EG][KINGS];
+			sum[mg][cl] += king_psq[cl_x][mg][pos.sq_king[cl]] + piece_value[mg][king];
+			sum[eg][cl] += king_psq[cl_x][eg][pos.sq_king[cl]] + piece_value[eg][king];
 
 			// generating attacks
 
-			attacks[color][KINGS] |= attack::king_map[pos.sq_king[color]];
-
-			// king safety threats
-			// credits go to https://chessprogramming.wikispaces.com/King+Safety
-
-			if (threat.count >= 2)
-			{
-				auto weight{ std::min(threat.sum, 63) };
-
-				if (!(pos.pieces[QUEENS] & pos.side[color]))
-					weight /= 2;
-				if (!(pos.pieces[ROOKS]  & pos.side[color]))
-					weight -= weight / 5;
-
-				sum[KINGS][MG][xcolor] -= king_threat[weight];
-				sum[KINGS][EG][xcolor] -= king_threat[weight];
-			}
+			bit64 targets{ bit::pc_attack[king][pos.sq_king[cl]] };
+			att[cl][king] |= targets;
+			att_by_2[cl]  |= targets & att_by_1[cl];
+			att_by_1[cl]  |= targets;
 		}
 	}
 
-	void evaluate(const board &pos, int sum[][2][2], int &phase, pawn &hash)
+	void evaluate(const board& pos, eval_score& sum, int& phase, kingpawn_hash::hash& entry)
 	{
+		// beginning with the evaluation of the position
+
+		if (pos.pieces[pawn])
+		{
+			// creating a new table entry if nothing is found in the pawn hash table
+			// the hash table speeds up the engine considerably (~40 Elo)
+			// a table entry provides some basic pawn evaluation
+
+			verify(pos.key_kingpawn);
+			if (entry.key != pos.key_kingpawn)
+			{
+				entry = kingpawn_hash::hash{};
+				pawns(pos, entry);
+				entry.key = pos.key_kingpawn;
+			}
+
+			sum[mg][white] = entry.score[mg][white];
+			sum[eg][white] = entry.score[eg][white];
+			sum[mg][black] = entry.score[mg][black];
+			sum[eg][black] = entry.score[eg][black];
+		}
+
 		// initializing attack tables
 
-		uint64 attacks[2][6]{};
-		attacks[WHITE][PAWNS] = attack::by_pawns(pos, WHITE);
-		attacks[BLACK][PAWNS] = attack::by_pawns(pos, BLACK);
+		std::array<king_pressure, 2> pressure{ { { pos, white }, { pos, black } } };
+		attack_list att{ { {{ entry.attack[white] }}, {{ entry.attack[black] }} } };
+		all_attacks att_by_1{ { entry.attack[white], entry.attack[black] } };
+		all_attacks att_by_2{};
 
-		// evaluating pieces & threats against the king
+		// evaluating pieces
 
-		pieces(pos, sum, attacks, phase, WHITE);
-		pieces(pos, sum, attacks, phase, BLACK);
+		pieces(pos, sum, att, att_by_1, att_by_2, pressure[black], phase, white);
+		pieces(pos, sum, att, att_by_1, att_by_2, pressure[white], phase, black);
 
-		// evaluating threats against pieces & pawns
+		// evaluating tactical threats against pieces & pawns
 
-		uint64 attacks_final[2]{};
-		for (auto &att_piece : attacks[WHITE]) attacks_final[WHITE] |= att_piece;
-		for (auto &att_piece : attacks[BLACK]) attacks_final[BLACK] |= att_piece;
+		tactics(pos, sum, att, att_by_1, white);
+		tactics(pos, sum, att, att_by_1, black);
 
-		threats(pos, sum, attacks, attacks_final, WHITE);
-		threats(pos, sum, attacks, attacks_final, BLACK);
+		// evaluating king safety threats
 
-		// evaluating pawns
-		 
-		pawns(pos, sum, attacks, attacks_final, hash);
+		king_safety(pos, sum, att, att_by_1, att_by_2, pressure[black], white);
+		king_safety(pos, sum, att, att_by_1, att_by_2, pressure[white], black);
+
+		// extending the pawn evaluation
+
+		passed_pawns(pos, sum, att_by_1, entry, white);
+		passed_pawns(pos, sum, att_by_1, entry, black);
 	}
 }
 
-int eval::static_eval(const board &pos, pawn &hash)
+score eval::static_eval(const board& pos, kingpawn_hash& hash)
 {
 	// entry point of the evaluation chain
-	// filtering out obviously drawn positions first
+	// filtering out obviously drawn positions with insufficient mating material first
 
-	if (draw::obvious(pos))
-		return uci::contempt[pos.xturn];
+	if (obvious_draw(pos))
+		return score::draw;
 
-	// evaluating
-
-	int phase{};
-	int sum[10][2][2]{};
-
-	evaluate(pos, sum, phase, hash);
-	auto score{ score::interpolate(sum, phase) };
-	assert(std::abs(score) < SCORE_LONGEST_MATE);
-
-	// scaling drawish positions
-
-	return relative::side[pos.turn] * draw::scale(pos, score);
-}
-
-void eval::itemise_eval(const board &pos, pawn &hash)
-{
-	// itemizing & displaying the static evaluation for debugging
+	// initializing & probing the pawn hash table
 
 	int phase{};
-	int sum[10][2][2]{};
-	sum::material(sum);
-	evaluate(pos, sum, phase, hash);
+	eval_score sum{};
+	kingpawn_hash::hash new_entry{};
+	kingpawn_hash::hash& entry{ !hash.table.empty() && pos.pieces[pawn] ? hash.table[pos.key_kingpawn & kingpawn_hash::mask] : new_entry };
 
-	// displaying the results
+	// evaluating the position
 
-	auto label{ "|            | w[MG]  w[EG] | b[MG]  b[EG] |  [MG]   [EG] |\n" };
-	auto row  { "+------------+--------------+--------------+--------------+\n" };
-	sync::cout << row << label;
-	assert(feature.size() == 10);
+	evaluate(pos, sum, phase, entry);
 
-	for (uint32 f{}; f < feature.size(); ++f)
-	{
-		sync::cout << "|" << feature[f] << std::string(12 - feature[f].size(), ' ') << "|";
-		for (int color{ WHITE }; color <= BLACK; ++color)
-		{
-			for (int stage{ MG }; stage <= EG; ++stage)
-			{
-				if (f == MATERIAL)
-				{
-					sync::cout << "  ---- ";
-					continue;
-				}
+	// adding initiative correction before interpolating the scores
 
-				// adjusting the material score
+	int sc_mg{ sum[mg][white] - sum[mg][black] };
+	int sc_eg{ sum[eg][white] - sum[eg][black] };
+	sc_eg += initiative(pos, sc_eg, entry);
 
-				int diff{};
-				if (f <= QUEENS)
-				{
-					diff = bit::popcnt(pos.pieces[f] & pos.side[color]) * piece_value[stage][f];
-					sum[MATERIAL][stage][color] += diff;
-				}
-				sum[f][stage][color] -= diff;
-				output::align(sum[f][stage][color]);
-			}
-			sync::cout << "|";
-		}
-		output::align(sum[f][MG][WHITE] - sum[f][MG][BLACK]);
-		output::align(sum[f][EG][WHITE] - sum[f][EG][BLACK]);
-		sync::cout << "|\n";
-	}
+	int sc{ interpolate(sc_mg, sc_eg, phase) };
+	verify(std::abs(sc) < int(score::longest_mate));
 
-	// summing up & considering draws
+	// scaling drawish positions (~17 Elo) & adjusting the sign relative to the side to move
 
-	auto score{ score::interpolate(sum, phase) };
-	auto scale{ draw::scale(pos, score) };
-
-	sync::cout << row;
-	sync::cout.precision(2);
-	sync::cout << score / 100.0 << std::endl;
-
-	if (draw::obvious(pos))
-		sync::cout << uci::contempt[pos.xturn] / 100.0 << " (draw)" << std::endl;
-	else if (scale != score)
-		sync::cout << scale / 100.0 << " (draw scaling)" << std::endl;
+	sc = draw_scale(pos, sc);
+	return score(sc * (pos.cl == white ? 1 : -1));
 }
 
 void eval::mirror_tables()
 {
-	// mirroring various tables to black's perspective
+	// mirroring various tables for black
 
-	for (int s{ MG }; s <= EG; ++s)
+	for (gamestage st : {mg, eg})
 	{
-		for (int sq{ H1 }; sq <= A8; ++sq)
+		for (square sq{ h1 }; sq <= a8; sq += 1)
 		{
-			pawn_psq[  BLACK][s][63 - sq] = pawn_psq[  WHITE][s][sq];
-			knight_psq[BLACK][s][63 - sq] = knight_psq[WHITE][s][sq];
-			bishop_psq[BLACK][s][63 - sq] = bishop_psq[WHITE][s][sq];
-			rook_psq[  BLACK][s][63 - sq] = rook_psq[  WHITE][s][sq];
-			queen_psq[ BLACK][s][63 - sq] = queen_psq[ WHITE][s][sq];
-			king_psq[  BLACK][s][63 - sq] = king_psq[  WHITE][s][sq];
+			pawn_psq[black][st][a8 - sq] = pawn_psq[white][st][sq];
+			knight_psq[black][st][a8 - sq] = knight_psq[white][st][sq];
+			bishop_psq[black][st][a8 - sq] = bishop_psq[white][st][sq];
+			rook_psq[black][st][a8 - sq] = rook_psq[white][st][sq];
+			queen_psq[black][st][a8 - sq] = queen_psq[white][st][sq];
+			king_psq[black][st][a8 - sq] = king_psq[white][st][sq];
 		}
 	}
 
-	for (int r{ R1 }; r <= R8; ++r)
+	for (int rk{ rank_1 }; rk <= rank_8; ++rk)
 	{
-		passed_rank[BLACK][r] = passed_rank[WHITE][R8 - r];
-		shield_rank[BLACK][r] = shield_rank[WHITE][R8 - r];
-		storm_rank[ BLACK][r] = storm_rank[ WHITE][R8 - r];
+		passed_rank[black][rk] = passed_rank[white][rank_8 - rk];
+		shield_rank[black][rk] = shield_rank[white][rank_8 - rk];
+		storm_rank[black][rk] = storm_rank[white][rank_8 - rk];
 
-		connected[BLACK][MG][r] = connected[WHITE][MG][R8 - r];
-		connected[BLACK][EG][r] = connected[WHITE][EG][R8 - r];
-	}
-}
-
-void eval::fill_tables()
-{
-	// filling various tables at startup
-
-	mirror_tables();
-
-	// creating the adjacent-files & king-chain tables
-
-	for (int f{ H }; f <= A; ++f)
-	{
-		adjacent[f] |= f > H ? bit::file[f - 1] : 0ULL;
-		adjacent[f] |= f < A ? bit::file[f + 1] : 0ULL;
-
-		king_chain[WHITE][f] = bit::rank[R1] & (adjacent[f] | (bit::rank[R1] & bit::file[f]));
-		king_chain[BLACK][f] = king_chain[WHITE][f] << 56;
-	}
-
-	// filling the front span table
-
-	for (int sq{ H1 }; sq <= A8; ++sq)
-	{
-		auto f{ index::file(sq) };
-		auto file_span{ bit::file[f] | adjacent[f] };
-
-		front_span[WHITE][sq] = file_span & attack::in_front[WHITE][sq];
-		front_span[BLACK][sq] = file_span & attack::in_front[BLACK][sq];
+		connected[black][mg][rk] = connected[white][mg][rank_8 - rk];
+		connected[black][eg][rk] = connected[white][eg][rank_8 - rk];
 	}
 }

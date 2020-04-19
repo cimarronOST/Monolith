@@ -1,6 +1,5 @@
 /*
-  Monolith 1.0  Copyright (C) 2017-2018 Jonas Mayr
-
+  Monolith 2 Copyright (C) 2017-2020 Jonas Mayr
   This file is part of Monolith.
 
   Monolith is free software: you can redistribute it and/or modify
@@ -18,164 +17,207 @@
 */
 
 
-#include <fstream>
-
 #include "thread.h"
 #include "uci.h"
 #include "search.h"
-#include "stream.h"
-#include "position.h"
+#include "misc.h"
+#include "time.h"
+#include "movegen.h"
 #include "bench.h"
 
-namespace
+namespace fen
 {
-	// extending the fen type to contain additional information
-
-	struct fen_extended
+	struct position
 	{
-		std::string fen;
 		std::string info;
-		int max_depth;
-	};
-
-	// set of perft positions
-
-	std::vector<fen_extended> perft_pos
-	{
-		{ "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq -", "119060324", 6 },
-		{ "r3k2r/p1ppqpb1/bn2pnp1/3PN3/1p2P3/2N2Q1p/PPPBBPPP/R3K2R w KQkq -", "193690690", 5 },
-		{ "rnbq1k1r/pp1Pbppp/2p5/8/2B5/8/PPP1NnPP/RNBQK2R w KQ -", "89941194", 5 },
-		{ "8/2p5/3p4/KP5r/1R3p1k/8/4P1P1/8 w - -", "178633661", 7 },
-		{ "8/5p2/8/2k3P1/p3K3/8/1P6/8 b - -", "64451405", 8 },
-		{ "r1k1r2q/p1ppp1pp/8/8/8/8/P1PPP1PP/R1K1R2Q w KQkq - 0 1", "172843489", 6 },
+		std::string best_mv;
+		std::string fen;
+		depth dt;
 	};
 
 	// set of various search positions to analyze & benchmark the search behavior
 
-	std::vector<fen_extended> search_pos
-	{
-		{ "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq -", "start position", 11 },
-		{ "r3k2r/p1ppqpb1/bn2pnp1/3PN3/1p2P3/2N2Q1p/PPPBBPPP/R3K2R w KQkq -", "kiwipete: bm e2a6", 11 },
-		{ "rn1qk2r/p1pnbppp/bp2p3/3pN3/2PP4/1P4P1/P2BPPBP/RN1QK2R w KQkq -", "silent but deadly: bm e5f7", 11 },
+	std::vector<position> search
+	{ {
+		{ "start position",    "0000", "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq -", 15 },
+		{ "kiwipete",          "e2a6", "r3k2r/p1ppqpb1/bn2pnp1/3PN3/1p2P3/2N2Q1p/PPPBBPPP/R3K2R w KQkq -", 15 },
+		{ "silent but deadly", "e5f7", "rn1qk2r/p1pnbppp/bp2p3/3pN3/2PP4/1P4P1/P2BPPBP/RN1QK2R w KQkq -", 15 },
 
-		{ "2k3r1/4b3/4P3/7B/p6K/P3p3/5n1Q/3q4 w - -", "immediate mate test: mate 0", 1 },
-		{ "4k3/4P1p1/4K1P1/2p5/1pP5/1P1N2B1/8/8 b - -", "immediate draw test: stalemate 0", 1 },
-		{ "8/1kn5/pn6/P6P/6r1/5K2/2r5/8 w - - 99 120", "immediate draw test: 50-move-rule-draw 0", 3 },
+		{ "find immediate mate: mate 0",         "0000", "2k3r1/4b3/4P3/7B/p6K/P3p3/5n1Q/3q4 w - -", 1 },
+		{ "find immediate draw: stalemate 0",    "0000", "4k3/4P1p1/4K1P1/2p5/1pP5/1P1N2B1/8/8 b - -", 1 },
+		{ "find immediate draw: 50-move-draw 0", "0000", "8/1kn5/pn6/P6P/6r1/5K2/2r5/8 w - - 99 120", 3 },
 
-		{ "8/3k1p2/8/8/3q3P/5K2/8/6q1 w - -", "depth limit test: KPvKQQP mate -1", lim::depth, },
-		{ "8/8/pppppppK/NBBR1NRp/nbbrqnrP/PPPPPPPk/8/Q7 w - -", "qsearch limit test: mate 1 bm a1h1", 3 },
+		{ "find mate: hakmem 70: KBNPPvKP mate 3",   "g7g8n", "5B2/6P1/1p6/8/1N6/kP6/2K5/8 w - -", 10 },
+		{ "find mate: zugzwang & null-move: mate 7", "e6e1",  "8/8/p3R3/1p5p/1P5p/6rp/5K1p/7k w - -", 24 },
+		{ "find mate: mate 12",                      "g3h5",  "2R5/p4pkp/2br1qp1/5P2/3p4/1P2Q1NP/P1P3P1/6K1 w - -", 15 },
+		{ "find mate: mate 15",                      "g1a1",  "8/6p1/1pp5/k7/1p6/1P6/6pK/6Qb w - -", 25 },
+		{ "find mate: mate 19",                      "g1d4",  "8/8/5p2/6Q1/8/p1K5/p2pp2p/k5B1 w - -", 20 },
 
-		{ "5B2/6P1/1p6/8/1N6/kP6/2K5/8 w - -", "hakmem 70: KBNPPvKP mate 3 bm g7g8n", 6 },
-		{ "8/8/p3R3/1p5p/1P5p/6rp/5K1p/7k w - -", "zugzwang & null-move test: mate 7 bm e6e1", 17 },
+		{ "find draw: 50-move-rule-draw 2",                  "f3e3", "8/1kn5/pn6/P6P/6r1/5K2/2r5/8 w - - 97 115", 15 },
+		{ "find draw: reti study: KPvKP material-draw 6",    "h8g7", "7K/8/k1P5/7p/8/8/8/8 w - -", 15 },
+		{ "find draw: razoring: KRPPPvKR repetition-draw 7", "e2f2", "k7/P5R1/7P/8/8/6P1/4r3/5K2 b - -", 15 },
+		{ "find draw: djaja study: repetition-draw ?",       "f5h6", "6R1/P2k4/r7/5N1P/r7/p7/7K/8 w - -", 11 },
 
-		{ "7K/8/k1P5/7p/8/8/8/8 w - -", "reti study: KPvKP material-draw 6 bm h8g7", 15 },
-		{ "8/1kn5/pn6/P6P/6r1/5K2/2r5/8 w - - 97 115", "draw test: 50-move-rule-draw 2 bm f3e3", 12 },
-		{ "k7/P5R1/7P/8/8/6P1/4r3/5K2 b - -", "razoring test: KRPPPvKR repetition-draw 7 bm e2f2", 15 },
-		{ "6R1/P2k4/r7/5N1P/r7/p7/7K/8 w - -", "djaja study: repetition-draw ? bm f5h6", 11 },
+		{ "test high depth: repetition draw ?", "0000", "k1b5/1p1p4/pP1Pp3/K2pPp2/1P1p1P2/3P1P2/5P2/8 w - -", 55 },
+		{ "test depth limit: KPvKQQP mate -1",  "0000", "8/3k1p2/8/8/3q3P/5K2/8/6q1 w - -", lim::dt },
+		{ "test qsearch explosion: mate 1",     "a1h1", "8/8/pppppppK/NBBR1NRp/nbbrqnrP/PPPPPPPk/8/Q7 w - -", 3 },
 
-		{ "r3k2r/8/8/8/8/8/8/R3K2R w KQkq -", "tt test: KRRvKRR mate 7 bm h1h8 a1a8", 17 },
-		{ "3k4/1p6/1P1K4/2P5/8/8/8/8 w - -", "tt test: KPPvKP mate 8 bm d6e6", 16 },
-		{ "4k3/8/8/8/8/8/R7/4K3 w - -", "tt test: KRvK mate 12 bm a2a7", 30 },
-		{ "8/2k5/4P3/8/1K6/8/8/8 w - -", "tt test: KPvK mate 12 bm b4c5", 28 },
-		{ "8/8/8/1k6/8/8/8/RK6 w - -", "tt test: KRvK mate 13 bm b1c2", 30 },
-	    { "8/8/8/p7/Kb1k4/8/8/8 w - - 2 67", "tt test: KvKBP mate -13 bm a4b3", 31 },
-		{ "4k3/8/8/8/8/8/4P3/4K3 w - -", "tt test fine 70: KPvK mate 22 bm e1d2 e1f2", 36 },
-		{ "8/k7/3p4/p2P1p2/P2P1P2/8/8/K7 w - -", "tt test lasker-reichhelm: KPPPvKPP mate 32 bm a1b1", 35 },
-	};
+		{ "test tt: mate score: mate 7",  "g4g7", "r1b1qr1k/5ppp/2p1p3/p1PpP3/P2N1PQB/2P1R3/6PP/3n2K1 w - -", 16 },
+		{ "test tt: KRRvKRR mate 7", "h1h8 a1a8", "r3k2r/8/8/8/8/8/8/R3K2R w KQkq -", 23 },
+		{ "test tt: KPPvKP mate 8",       "d6e6", "3k4/1p6/1P1K4/2P5/8/8/8/8 w - -", 20 },
+		{ "test tt: KRvK mate 12",        "a2a7", "4k3/8/8/8/8/8/R7/4K3 w - -", 30 },
+		{ "test tt: KPvK mate 12",        "b4c5", "8/2k5/4P3/8/1K6/8/8/8 w - -", 28 },
+		{ "test tt: KRvK mate 13",        "b1c2", "8/8/8/1k6/8/8/8/RK6 w - -", 28 },
+		{ "test tt: KvKBP mate -13",      "a4b3", "8/8/8/p7/Kb1k4/8/8/8 w - - 2 67", 27 },
+		{ "test tt: fine 70: KPvK mate 22",           "e1d2 e1f2", "4k3/8/8/8/8/8/4P3/4K3 w - -", 25 },
+		{ "test tt: lasker-reichhelm: KPPPPvKPPP mate 32", "a1b1", "8/k7/3p4/p2P1p2/P2P1P2/8/8/K7 w - -", 30 },
+
+		{ "test syzygy 5-pieces: KBNvKP dtz 107 cursed win",        "a4c5", "8/8/2K5/7B/N7/1k6/1p6/8 w - -", 1 },
+		{ "test syzygy 5-pieces: KPPvKP dtz 104 blessed loss", "b6c6 b6c7", "8/8/1k2P2K/6P1/8/3p4/8/8 b - -", 1 },
+		{ "test syzygy 6-pieces: KQPvKQP dtz 100 loss",             "f3e3", "q7/8/8/P7/3Q4/5K2/p7/4k3 w - -", 1 },
+		{ "test syzygy 7-pieces: KRPPvKRP dtz 99 win",              "h5g6", "2r5/8/8/2pP3K/2P2k2/3R4/8/8 w - -", 1 }
+	} };
 }
 
-namespace get
+namespace epd
 {
 	// parsing the Extended Position Description (EPD) format
 
-	std::string fen(std::string &input)
+	std::string fen(const std::string& input)
 	{
 		return input.substr(0, input.find("bm") - 1);
 	}
 
-	std::string bm(std::string &input)
+	std::string bm(const std::string& input)
 	{
 		auto bm_begin{ input.find("bm") + 3 };
 		return input.substr(bm_begin, input.find_first_of(';') - bm_begin);
 	}
 
-	std::string id(std::string &input)
+	std::string id(const std::string& input)
 	{
 		auto id_begin{ input.find_first_of('"') + 1 };
 		return input.substr(id_begin, input.find_last_of('"') - id_begin);
 	}
 }
 
-void bench::perft(std::string gen)
+namespace bench
 {
-	// performance test, asserting the correctness and speed of the move-generator
-
-	filestream::open();
-	board pos;
-
-	auto mode{ gen == "pseudo" ? PSEUDO : LEGAL };
-	analysis::reset();
-	sync::cout << "running perft with " << (gen != "pseudo" ? "legal" : "pseudolegal") << " move generator\n";
-
-	for (auto &p : perft_pos)
+	template<mode md>
+	int64 perft_search(board &pos, depth dt)
 	{
-		sync::cout << "\nfen=\"" << p.fen << "\"\n\n";
-		uci::set_position(pos, p.fen);
+		// a perft search does a complete search of the whole search tree for the depth specified
+		// essentially it is a correctness & speed test of the move-generator and the make-move function
 
-		analysis::perft(pos, p.max_depth, mode);
-		sync::cout << ">>>>> " << p.max_depth << ": " << p.info << std::endl;
+		if (dt == 0)
+			return 1;
+		int64 nodes{};
+		gen<md> list(pos);
+		list.gen_all();
+
+		for (int i{}; i < list.cnt.mv; ++i)
+		{
+			pos.new_move(list.mv[i]);
+			verify_deep(list.pos.pseudolegal(list.mv[i]));
+			verify_deep(md == mode::pseudolegal || pos.legal());
+
+			if constexpr (md == mode::pseudolegal)
+				if (!pos.legal())
+				{
+					pos = list.pos;
+					continue;
+				}
+			nodes += perft_search<md>(pos, dt - 1);
+			pos = list.pos;
+		}
+		return nodes;
 	}
-
-	sync::cout << std::endl;
-	analysis::summary();
 }
 
-void bench::search(std::string &filename, int64 &time)
+template void bench::perft<mode::legal>(board, depth);
+template void bench::perft<mode::pseudolegal>(board, depth);
+
+template<mode md>
+void bench::perft(board pos, depth dt_max)
 {
-	// running a limited search on the set of various positions above
+	// starting perft
 
-	sync::cout << "running benchmark\n";
+	chronometer chrono{};
+	int64 all_nodes{};
+	std::cout.precision(3);
 
-	board pos;
-	thread_pool threads(uci::thread_count, pos);
-	int64 movetime{ lim::movetime };
-	int count{};
+	for (depth dt{ 1 }; dt <= dt_max; ++dt)
+	{
+		std::cout << "perft " << dt << ": ";
 
-	threads.start_all();
-	filestream::open();
-	analysis::reset();
+		int64 nodes{ perft_search<md>(pos, dt) };
+		auto time { chrono.elapsed() };
+
+		all_nodes += nodes;
+		std::cout << nodes
+			<< " time " << time
+			<< " nps " << std::fixed << milliseconds(all_nodes) / std::max(time, milliseconds(1)) << " kN/s"
+			<< std::endl;
+	}
+}
+
+void bench::search(const std::string& filename, const milliseconds& time)
+{
+	// running a limited search on a set of positions
+
+	std::cout << "running benchmark\n";
+	verify(uci::mv_offset == 0);
+
+	board pos{};
+	thread_pool threads(uci::thread_cnt, pos);
+	timemanage::move_time movetime{ lim::movetime, milliseconds(0) };
+	int cnt{};
+
 	uci::infinite = true;
 	uci::limit.nodes = lim::nodes;
+	search::bench = 0;
+	chronometer::reset_hit_threshold();
+	threads.start_all();
 
-	// running an external set of positions contained in <filename.epd> for <time> milliseconds instead
+	// the positions contained in fen::search can be skipped by specifying an external set of positions in filename.epd
+	// each position is then searched with the amount of time given
 
-	std::fstream stream(filestream::fullpath + filename);
+	std::fstream stream(filesystem::path + filename);
 	if (stream.is_open())
 	{
-		std::string input;
-		search_pos.clear();
+		std::string input{};
+		fen::search.clear();
 		uci::infinite = false;
-		movetime = time;
+		movetime.target = time;
 
-		while(std::getline(stream, input))
-			search_pos.push_back({ get::fen(input), get::id(input) + " bm " + get::bm(input), lim::depth });
+		while (std::getline(stream, input))
+			fen::search.push_back(fen::position{ epd::id(input), epd::bm(input), epd::fen(input), lim::dt });
 	}
 
 	// starting the benchmark
 
-	for (auto &p : search_pos)
+	chronometer chrono{};
+	for (auto& p : fen::search)
 	{
-		sync::cout << "\nposition " << ++count << ": " << p.info << "\nfen=\"" << p.fen << "\"" << std::endl;
+		std::cout << "\nposition " << ++cnt << ": " << p.info << " bm " << p.best_mv
+			<< "\nfen=\"" << p.fen << "\"" << std::endl;
 
-		uci::new_game(pos);
-		uci::set_position(pos, p.fen);
-		uci::limit.depth = p.max_depth;
-		uci::stop = false;		
+		pos.parse_fen(p.fen);
+		threads.clear_history();
+		uci::game_hash[uci::mv_offset] = pos.key;
+		uci::hash_table.clear();
+		uci::limit.dt = p.dt;
+		uci::stop = false;
 		search::start(threads, movetime);
 	}
 
-	sync::cout << std::endl;
-	analysis::summary();
 	uci::infinite = false;
 	uci::stop = true;
+
+	milliseconds interim{ chrono.elapsed() };
+	std::cout
+		<< "\ntime  : " << interim << " ms"
+		<< "\nnodes : " << search::bench
+		<< "\nnps   : " << search::bench / interim.count() << " kN/s"
+		<< std::endl;
 }

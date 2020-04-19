@@ -1,6 +1,5 @@
 /*
-  Monolith 1.0  Copyright (C) 2017-2018 Jonas Mayr
-
+  Monolith 2 Copyright (C) 2017-2020 Jonas Mayr
   This file is part of Monolith.
 
   Monolith is free software: you can redistribute it and/or modify
@@ -18,156 +17,168 @@
 */
 
 
-#include "utilities.h"
 #include "uci.h"
 #include "move.h"
 
-namespace
-{
-	// simplifying algebraic notation of moves
+static_assert(sizeof(move) == 4);
 
-	const std::string promo[]{ "n", "b", "r", "q" };
+bool move::verify_move(square sq1, square sq2, piece pc, piece vc, color cl, flag fl)
+{
+	// checking the move for sanity
+
+	return type::sq(sq1) && type::sq(sq2) && type::pc(pc)
+		&& ((type::pc(vc) && vc != king) || vc == no_piece)
+		&& type::cl(cl) && type::fl(fl);
 }
 
-namespace
+move::move(square sq1, square sq2, piece pc, piece vc, color cl, flag fl)
 {
-	std::string add_promo(int flag)
-	{
-		// adding the corresponding character for pawn promotion to the coordinate-string
+	// compressing all move items into 22 bits
 
-		assert(flag >= NONE && flag <= PROMO_QUEEN);
-		return flag >= PROMO_ALL ? promo[flag - PROMO_ALL] : "";
-	}
-
-	std::string coordinate(int sq)
-	{
-		// converting a square index of a bitboard into a coordinate-string
-
-		assert(sq >= H1 && sq <= A8);
-		std::string str{};
-		str += 'h' - static_cast<char>(index::file(sq));
-		str += '1' + static_cast<char>(index::rank(sq));
-		return str;
-	}
+	verify(verify_move(sq1, sq2, pc, vc, cl, fl));
+	mv = uint32(sq1 | (sq2 << 6) | (pc << 12) | (vc << 15) | (cl << 18) | (fl << 19));
 }
 
-int move::sq1(uint32 move)
+uint32 move::raw() const
 {
-	return move & 0x3f;
+	return mv;
 }
 
-int move::sq2(uint32 move)
+void move::set_sq2(square sq)
 {
-	return (move >> 6) & 0x3f;
+	// corrupting the move by setting a new to-square
+
+	verify(type::sq(sq));
+	mv = (mv & 0xfffff03fUL) | (sq << 6);
 }
 
-int move::flag(uint32 move)
+move::operator bool() const
 {
-	auto flag{ (move >> 12) & 0xf };
-	assert(flag >= NONE);
-	return flag;
+	return raw() != 0L;
 }
 
-int move::piece(uint32 move)
+bool move::operator==(const move& m) const
 {
-	return (move >> 16) & 0x7;
+	return raw() == m.raw();
 }
 
-int move::victim(uint32 move)
+bool move::operator!=(const move& m) const
 {
-	return (move >> 19) & 0x7;
+	return raw() != m.raw();
 }
 
-int move::turn(uint32 move)
+square move::sq1() const
 {
-	auto turn{ move >> 22 };
-	assert(turn == WHITE || turn == BLACK);
-	return turn;
+	return square((mv >> 0) & 63);
 }
 
-move::elements move::decode(uint32 move)
+square move::sq2() const
 {
-	return{ sq1(move), sq2(move), flag(move), piece(move), victim(move), turn(move) };
+	return square((mv >> 6) & 63);
 }
 
-uint32 move::encode(int sq1, int sq2, int flag, int piece, int victim, int turn)
+piece move::pc() const
 {
-	assert(sq1    >= H1    && sq1    <= A8);
-	assert(sq2    >= H1    && sq2    <= A8);
-	assert(flag   >= NONE  && flag   <= PROMO_QUEEN);
-	assert(piece  >= PAWNS && piece  <= KINGS);
-	assert(victim >= PAWNS && victim <= NONE && victim != KINGS);
-	assert(turn   == WHITE || turn   == BLACK);
-
-	return sq1 | (sq2 << 6) | (flag << 12) | (piece << 16) | (victim << 19) | (turn << 22);
+	return piece((mv >> 12) & 7);
 }
 
-bool move::castling(int flag)
+piece move::vc() const
 {
-	assert(flag >= NONE && flag <= PROMO_QUEEN);
-	return flag == CASTLE_SHORT || flag == CASTLE_LONG;
+	return piece((mv >> 15) & 7);
 }
 
-bool move::castling(uint32 move)
+color move::cl() const
 {
-	return castling(flag(move));
+	return color((mv >> 18) & 1);
 }
 
-bool move::capture(uint32 move)
+flag move::fl() const
 {
-	return victim(move) != NONE;
+	return flag((mv >> 19) & 7);
 }
 
-bool move::promo(uint32 move)
+move::item::item(move mv) :
+	sq1{ mv.sq1() },
+	sq2{ mv.sq2() },
+	pc { mv.pc()  },
+	vc { mv.vc()  },
+	cl { mv.cl()  },
+	fl { mv.fl()  }
 {
-	return flag(move) >= PROMO_ALL;
+	verify(verify_move(sq1, sq2, pc, vc, cl, fl));
 }
 
-bool move::quiet(uint32 move)
+piece move::item::promo_pc() const
 {
-	return victim(move) == NONE && !promo(move);
+	verify(fl >= promo_knight && fl <= promo_queen);
+	return piece(fl - 3);
 }
 
-bool move::push_to_7th(uint32 move)
+bool move::item::promo() const
 {
-	return piece(move) == PAWNS && relative::rank(index::rank(sq2(move)), turn(move)) == R7;
+	return fl >= promo_knight;
 }
 
-bool move::pawn_advance(uint32 move)
+bool move::item::castling() const
 {
-	return piece(move) == PAWNS && relative::rank(index::rank(sq2(move)), turn(move)) >= R5;
+	return fl == castle_east || fl == castle_west;
 }
 
-int move::promo_piece(uint32 move)
+piece move::promo_pc() const
 {
-	return promo_piece(flag(move));
+	return piece(fl() - 3);
 }
 
-int move::promo_piece(int flag)
+bool move::castle() const
 {
-	assert(flag >= PROMO_ALL && flag <= PROMO_QUEEN);
-	return flag - 11;
+	flag fl{ this->fl() };
+	return fl == castle_east || fl == castle_west;
 }
 
-int move::castle_side(int flag)
+bool move::capture() const
 {
-	assert(castling(flag));
-	static_assert(CASTLE_SHORT == 10, "castle flag");
-	return flag - 10;
+	return vc() != no_piece;
 }
 
-std::string move::algebraic(uint32 move)
+bool move::promo() const
 {
-	// converting <move> to algebraic notation, e.g. 'e2e4'
+	return fl() >= promo_knight;
+}
 
-	if (move == MOVE_NONE)
-		return "0000";
-	elements el{ decode(move) };
+bool move::quiet() const
+{
+	return vc() == no_piece && !promo();
+}
 
-	// adjusting castling notation
+bool move::push_to_7th() const
+{
+	return pc() == pawn && type::rel_rk_of(type::rk_of(sq2()), cl()) == rank_7;
+}
 
-	if (!uci::chess960 && castling(el.flag))
-		el.sq2 = square::king_target[el.turn][castle_side(el.flag)];
+std::string move::algebraic() const
+{
+	// converting the move into algebraic notation, e.g. 'e2e4'
+	// castling moves and promotions require special care
 
-	return coordinate(el.sq1) + coordinate(el.sq2) + add_promo(el.flag);
+	if (!(*this)) return "0000";
+	item mv{ *this };
+
+	if (!uci::chess960 && mv.castling())
+		mv.sq2 = king_target[mv.cl][mv.fl];
+
+	std::string coordinate{ type::sq_of(mv.sq1) + type::sq_of(mv.sq2) };
+	if (mv.promo())
+		coordinate += "nbrq"[mv.fl - promo_knight];
+
+	return coordinate;
+}
+
+depth move_var::get_seldt()
+{
+	// retrieving the selective depth, i.e. the highest reached depth
+
+	depth new_dt{ seldt };
+	for ( ; mv[new_dt]; ++new_dt);
+	seldt = std::max(new_dt, std::max(dt, 1));
+	return seldt;
 }

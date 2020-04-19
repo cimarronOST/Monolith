@@ -1,6 +1,5 @@
 /*
-  Monolith 1.0  Copyright (C) 2017-2018 Jonas Mayr
-
+  Monolith 2 Copyright (C) 2017-2020 Jonas Mayr
   This file is part of Monolith.
 
   Monolith is free software: you can redistribute it and/or modify
@@ -18,483 +17,349 @@
 */
 
 
-#include "utilities.h"
-#include "move.h"
+#include "attack.h"
 #include "bit.h"
 #include "movegen.h"
 
-bool gen::find(uint32 move)
-{
-	// checking whether the move can be found in the movelist
+template class gen<mode::legal>;
+template class gen<mode::pseudolegal>;
 
-	return std::find(this->move, this->move + moves, move) != this->move + moves;
+namespace pawn_gen
+{
+	// pawn move generation details
+
+	struct gen
+	{
+		std::array<bit64, 2> mask{};
+		std::array<int, 2> shift{};
+		flag fl{};
+	};
+
+	constexpr std::array<std::array<gen, 2>, 7> gen_detail
+	{ {
+		{{	// quiet
+			{{{ bit::max, bit::max }}, shift::push1x, no_flag },
+			{{{ bit::rank[rank_2], bit::rank[rank_7] }}, shift::push2x, no_flag }
+		}},
+		{{  // quiet_promo_all
+			{{{ bit::max, bit::max }}, shift::push1x, promo_queen },
+			{{{ 0ULL, 0ULL }}, {{ 0, 0 }}, no_flag }
+		}},
+		{{  // quiet_promo_queen
+			{{{ bit::max, bit::max }}, shift::push1x, promo_queen },
+			{{{ 0ULL, 0ULL }}, {{ 0, 0 }}, no_flag }
+		}},
+		{{  // capture
+			{ bit::no_west_boarder, shift::capture_west, no_flag },
+			{ bit::no_east_boarder, shift::capture_east, no_flag }
+			}},
+		{{  // capture_promo_all
+			{ bit::no_west_boarder, shift::capture_west, promo_queen },
+			{ bit::no_east_boarder, shift::capture_east, promo_queen }
+		}},
+		{{  // capture_promo_queen
+			{ bit::no_west_boarder, shift::capture_west, promo_queen },
+			{ bit::no_east_boarder, shift::capture_east, promo_queen }
+		}},
+		{{  // enpassant
+			{ bit::no_west_boarder, shift::capture_west, enpassant },
+			{ bit::no_east_boarder, shift::capture_east, enpassant }
+		}}
+	} };
 }
 
-bool gen::empty() const
-{
-	// checking if there are no moves in the movelist
+template int gen<mode::legal>::gen_all();
+template int gen<mode::pseudolegal>::gen_all();
 
-	return moves == 0;
+template<mode md> int gen<md>::gen_all()
+{
+	// generating all possible moves
+
+	verify(cnt.mv == 0);
+	pawns<stage::quiet>();
+	pawns<stage::capture>();
+	pawns<stage::enpassant>();
+	pawns<stage::quiet_promo_all>();
+	pawns<stage::capture_promo_all>();
+
+	pieces<stage::capture>({ knight, bishop, rook, queen, king });
+	pieces<stage::quiet>  ({ knight, bishop, rook, queen, king });
+	castle();
+
+	return cnt.mv;
 }
 
-void gen::gen_all()
-{
-	// root node & perft & UCI move generation
-	// all moves independent of their stages are generated
+template int gen<mode::legal>::gen_searchmoves(const std::vector<move>&);
+template int gen<mode::pseudolegal>::gen_searchmoves(const std::vector<move>&);
 
-	gen_tactical<PROMO_ALL>();
-	gen_quiet();
-}
-
-void gen::gen_searchmoves(std::vector<uint32> &searchmoves)
+template<mode md> int gen<md>::gen_searchmoves(const std::vector<move>& moves)
 {
 	// reacting to the UCI 'go searchmoves' command
 
-	std::copy(searchmoves.begin(), searchmoves.end(), move);
-	moves = static_cast<int>(searchmoves.size());
+	for (cnt.mv = 0; cnt.mv < (int)moves.size(); ++cnt.mv)
+		mv[cnt.mv] = moves[cnt.mv];
+	return cnt.mv;
 }
 
 // external move generating functions called by movepick
 
-int gen::gen_hash(uint32 &hash_move)
+template int gen<mode::legal>::gen_hash(move&);
+template int gen<mode::pseudolegal>::gen_hash(move&);
+
+template<mode md> int gen<md>::gen_hash(move& hash_mv)
 {
 	// "generating" the hash move
 
-	assert(moves == 0);
-
-	if (hash_move != MOVE_NONE)
+	verify(cnt.mv == 0);
+	if (hash_mv)
 	{
-		if (pos.pseudolegal(hash_move))
-			move[moves++] = hash_move;
+		if (pos.pseudolegal(hash_mv))
+			mv[cnt.mv++] = hash_mv;
 		else
-			hash_move = MOVE_NONE;
+			hash_mv = move{};
 	}
-	return moves;
+	return cnt.mv;
 }
 
-template int gen::gen_tactical<PROMO_ALL>();
-template int gen::gen_tactical<PROMO_QUEEN>();
+template int gen<mode::legal>::gen_capture();
+template int gen<mode::pseudolegal>::gen_capture();
 
-template<promo_mode promo>
-int gen::gen_tactical()
+template<mode md> int gen<md>::gen_capture()
 {
-	// generating captures
+	// generating all capturing moves
 
-	assert(moves == 0);
-	assert(count.capture == 0);
-	auto targets{ pos.side[pos.xturn] };
+	verify(cnt.mv == 0);
+	pawns <stage::capture>  ();
+	pawns <stage::enpassant>();
+	pieces<stage::capture>  ({ king, queen, rook, bishop, knight });
 
-	king(targets);
-	pawn_capture();
-	queen(targets);
-	rook(targets);
-	bishop(targets);
-	knight(targets);
-	count.capture = moves;
-
-	// generating promotions
-
-	pawn_promo<promo>();
-	count.promo = moves - count.capture;
-
-	return moves;
+	cnt.capture = cnt.mv;
+	return cnt.mv;
 }
 
-int gen::gen_killer(uint32 killer[], uint32 counter)
+template int gen<mode::legal>::gen_promo(stage);
+template int gen<mode::pseudolegal>::gen_promo(stage);
+
+template<mode md> int gen<md>::gen_promo(stage st)
+{
+	// generating all promotion moves
+	// capture-generation always has to take place before to get counters right
+
+	if (st == stage::promo_all)
+	{
+		pawns<stage::capture_promo_all>();
+		pawns<stage::quiet_promo_all>();
+	}
+	else if (st == stage::promo_queen)
+	{
+		pawns<stage::capture_promo_queen>();
+		pawns<stage::quiet_promo_queen>();
+	}
+
+	cnt.promo = cnt.mv - cnt.capture;
+	return cnt.promo;
+}
+
+template int gen<mode::legal>::gen_killer(const killer_list&, move);
+template int gen<mode::pseudolegal>::gen_killer(const killer_list&, move);
+
+template<mode md> int gen<md>::gen_killer(const killer_list& killer, move counter)
 {
 	// "generating" quiet killer moves
 
-	assert(moves == 0);
-	for (int slot{}; slot < 2; ++slot)
+	verify(cnt.mv == 0);
+	for (move kill : killer)
 	{
-		if (pos.pseudolegal(killer[slot]))
-			move[moves++] = killer[slot];
+		if (pos.pseudolegal(kill))
+			mv[cnt.mv++] =  kill;
 	}
 
 	// "generating" the counter move
 
 	if (pos.pseudolegal(counter) && counter != killer[0] && counter != killer[1])
-		move[moves++] = counter;
+		mv[cnt.mv++] = counter;
 
-	return moves;
+	return cnt.mv;
 }
 
-int gen::gen_quiet()
+template int gen<mode::legal>::gen_quiet();
+template int gen<mode::pseudolegal>::gen_quiet();
+
+template<mode md> int gen<md>::gen_quiet()
 {
-	// generating quiet moves
+	// generating all quiet moves
 
-	auto targets{ ~pos.side[BOTH] };
+	pieces<stage::quiet>({ king, queen, rook, bishop, knight });
+	castle();
+	pawns <stage::quiet>();
 
-	king(targets);
-	queen(targets);
-	rook(targets);
-	bishop(targets);
-	knight(targets);
-	pawn_quiet(targets);
-
-	return moves;
+	return cnt.mv;
 }
 
-int gen::gen_check()
-{
-	// generating quiet checking moves
+template int gen<mode::legal>::restore_loosing();
+template int gen<mode::pseudolegal>::restore_loosing();
 
-	assert(moves == 0);
-	assert(count.capture == 0);
-
-	// generating direct checks first, this is done by restricting the target-square-mask
-	// to empty squares from which the enemy king can be reached
-
-	auto sq{ pos.sq_king[pos.xturn] };
-	auto empty{ ~pos.side[BOTH] };
-	auto reach{ empty & attack::by_slider<QUEEN>(sq, pos.side[BOTH]) };
-	king_color = bit::color(1ULL << sq);
-
-	queen(reach);
-	rook(reach & attack::slide_map[ROOK][sq]);
-	bishop(reach & attack::slide_map[BISHOP][sq]);
-	knight(empty & attack::knight_map[sq]);
-	pawn_quiet(empty & attack::king_map[sq] & attack::slide_map[BISHOP][sq] & attack::in_front[pos.xturn][sq]);
-
-	// generating discovered checks now, this is done by finding all pinned pieces of the same color
-	// as the pinning piece and considering only moves of the pinned piece that break the pin
-	// legal move generation is assumed
-
-	uint64 pseudo_pin[64]{};
-	attack::pins(pos, pos.xturn, pos.turn, pseudo_pin);
-
-	for (int sq{ H1 }; sq <= A8; ++sq)
-		pin[sq] = { pseudo_pin[sq] ? pin[sq] | ~pseudo_pin[sq] : std::numeric_limits<uint64>::max() };
-	static_cast<void>(gen_quiet());
-
-	return moves;
-}
-
-int gen::restore_loosing()
+template<mode md> int gen<md>::restore_loosing()
 {
 	// restoring loosing captures (copying them back from the bottom of the movelist)
 
-	for (int i{}; i < count.loosing; ++i)
-		move[i] = move[lim::moves - 1 - i];
+	for (int i{}; i < cnt.loosing; ++i)
+		mv[i] = mv[lim::moves - 1 - i];
 
-	assert(moves == 0);
-	assert(count.capture == 0);
-	assert(count.promo == 0);
+	verify(cnt.mv == 0);
+	verify(cnt.capture == 0);
+	verify(cnt.promo == 0);
 
-	moves = count.loosing;
-	return moves;
+	cnt.mv = cnt.loosing;
+	return cnt.mv;
 }
 
-int gen::restore_deferred(uint32 deferred[])
+template int gen<mode::legal>::restore_deferred(const move_list&, int);
+template int gen<mode::pseudolegal>::restore_deferred(const move_list&, int);
+
+template<mode md> int gen<md>::restore_deferred(const move_list& deferred, int deferred_cnt)
 {
 	// restoring deferred moves
 
-	assert(moves == 0);
-	while (deferred[moves] != MOVE_NONE)
-	{
-		move[moves] = deferred[moves];
-		moves += 1;
-	}
-	return moves;
+	verify(cnt.mv == 0);
+
+	for (; cnt.mv < deferred_cnt; ++cnt.mv)
+		mv[cnt.mv] = deferred[cnt.mv];
+	return cnt.mv;
 }
 
-// internal move generating functions
-
-template<promo_mode promo>
-void gen::pawn_promo()
+template<mode md> template<stage st> void gen<md>::pawns()
 {
-	// capturing west to promotion
+	// generating pawn moves
+	// starting with getting stage dependencies right
 
-	auto targets{ bit::shift(pos.pieces[PAWNS] & pos.side[pos.turn] & ~bit::file_west[pos.turn], shift::capture_west[pos.turn])
-		& evasions & bit::rank_promo & pos.side[pos.xturn] };
-	while (targets)
+	static_assert(st != stage::promo_all && st != stage::promo_queen);
+
+	bit64 mask{ bit::max };
+	if constexpr (st == stage::quiet)
+		mask &= evasions & ~bit::rank_promo & ~pos.side[both];
+	if constexpr (st == stage::quiet_promo_all)
+		mask &= evasions & bit::rank_promo & ~pos.side[both];
+	if constexpr (st == stage::quiet_promo_queen)
+		mask &= evasions & bit::rank_promo & ~pos.side[both];
+	if constexpr (st == stage::capture)
+		mask &= evasions & ~bit::rank_promo & pos.side[pos.cl_x];
+	if constexpr (st == stage::capture_promo_all)
+		mask &= evasions & bit::rank_promo & pos.side[pos.cl_x];
+	if constexpr (st == stage::capture_promo_queen)
+		mask &= evasions & bit::rank_promo & pos.side[pos.cl_x];
+	if constexpr (st == stage::enpassant)
+		mask &= bit::shift(evasions, shift::push1x[pos.cl]) & ~bit::rank_promo & pos.ep_rear;
+
+	// generating the moves
+
+	for (auto& pawn : pawn_gen::gen_detail[int(st)])
 	{
-		auto target{ bit::scan(targets) };
-		auto origin{ target - shift::capture_west[pos.turn * 2] };
-		assert((1ULL << origin) & pos.pieces[PAWNS] & pos.side[pos.turn]);
-
-		if ((1ULL << target) & ~pin[origin])
-		{
-			for (int flag{ PROMO_QUEEN }; flag >= promo; --flag)
-				move[moves++] = move::encode(origin, target, flag, PAWNS, pos.piece[target], pos.turn);
-		}
-		targets &= targets - 1;
-	}
-
-	// capturing east to promotion
-
-	targets = bit::shift(pos.pieces[PAWNS] & pos.side[pos.turn] & ~bit::file_east[pos.turn], shift::capture_east[pos.turn])
-		& evasions & bit::rank_promo & pos.side[pos.xturn];
-	while (targets)
-	{
-		auto target{ bit::scan(targets) };
-		auto origin{ target - shift::capture_east[pos.turn * 2] };
-		assert((1ULL << origin) & pos.pieces[PAWNS] & pos.side[pos.turn]);
-
-		if ((1ULL << target) & ~pin[origin])
-		{
-			for (int flag{ PROMO_QUEEN }; flag >= promo; --flag)
-				move[moves++] = move::encode(origin, target, flag, PAWNS, pos.piece[target], pos.turn);
-		}
-		targets &= targets - 1;
-	}
-
-	// single push to promotion
-
-	targets = bit::shift(pos.pieces[PAWNS] & pos.side[pos.turn], shift::push[pos.turn]) & ~pos.side[BOTH] & evasions & bit::rank_promo;
-	while (targets)
-	{
-		auto target{ bit::scan(targets) };
-		auto origin{ target - shift::push[pos.turn * 2] };
-		assert((1ULL << origin) & pos.pieces[PAWNS] & pos.side[pos.turn]);
-
-		if ((1ULL << target) & ~pin[origin])
-		{
-			for (int flag{ PROMO_QUEEN }; flag >= promo; --flag)
-				move[moves++] = move::encode(origin, target, flag, PAWNS, NONE, pos.turn);
-		}
-		targets &= targets - 1;
-	}
-}
-
-void gen::pawn_capture()
-{
-	// capturing west
-
-	auto targets{ bit::shift(pos.pieces[PAWNS] & pos.side[pos.turn] & ~bit::file_west[pos.turn], shift::capture_west[pos.turn])
-		& ~bit::rank_promo };
-	auto targets_cap{ targets & pos.side[pos.xturn] & evasions };
-
-	while (targets_cap)
-	{
-		auto target{ bit::scan(targets_cap) };
-		auto origin{ target - shift::capture_west[pos.turn * 2] };
-		assert((1ULL << origin) & pos.pieces[PAWNS] & pos.side[pos.turn]);
-
-		if ((1ULL << target) & ~pin[origin])
-			move[moves++] = move::encode(origin, target, NONE, PAWNS, pos.piece[target], pos.turn);
-
-		targets_cap &= targets_cap - 1;
-	}
-
-	// capturing en-passant west
-
-	auto target_ep{ targets & pos.ep_rear & bit::shift(evasions, shift::push[pos.turn]) };
-	if (target_ep)
-	{
-		auto target{ bit::scan(target_ep) };
-		auto origin{ target - shift::capture_west[pos.turn * 2] };
-		assert((1ULL << origin) & pos.pieces[PAWNS] & pos.side[pos.turn]);
-
-		target_ep &= ~pin[origin];
-		if (target_ep)
-			move[moves++] = move::encode(origin, target, ENPASSANT, PAWNS, PAWNS, pos.turn);
-	}
-
-	// capturing east
-
-	targets = bit::shift(pos.pieces[PAWNS] & pos.side[pos.turn] & ~bit::file_east[pos.turn], shift::capture_east[pos.turn])
-		& ~bit::rank_promo;
-	targets_cap = targets & pos.side[pos.xturn] & evasions;
-
-	while (targets_cap)
-	{
-		auto target{ bit::scan(targets_cap) };
-		auto origin{ target - shift::capture_east[pos.turn * 2] };
-		assert((1ULL << origin) & pos.pieces[PAWNS] & pos.side[pos.turn]);
-
-		if ((1ULL << target) & ~pin[origin])
-			move[moves++] = move::encode(origin, target, NONE, PAWNS, pos.piece[target], pos.turn);
-
-		targets_cap &= targets_cap - 1;
-	}
-
-	// capturing en-passant east
-
-	target_ep = targets & pos.ep_rear & bit::shift(evasions, shift::push[pos.turn]);
-	if (target_ep)
-	{
-		auto target{ bit::scan(target_ep) };
-		auto origin{ target - shift::capture_east[pos.turn * 2] };
-		assert((1ULL << origin) & pos.pieces[PAWNS] & pos.side[pos.turn]);
-
-		target_ep &= ~pin[origin];
-		if (target_ep)
-			move[moves++] = move::encode(origin, target, ENPASSANT, PAWNS, PAWNS, pos.turn);
-	}
-}
-
-void gen::pawn_quiet(uint64 mask)
-{
-	// single push
-
-	auto pushes{ bit::shift(pos.pieces[PAWNS] & pos.side[pos.turn], shift::push[pos.turn]) & mask & ~bit::rank_promo };
-	auto targets{ pushes & evasions };
-
-	while (targets)
-	{
-		auto target{ bit::scan(targets) };
-		auto origin{ target - shift::push[pos.turn * 2] };
-		assert((1ULL << origin) & pos.pieces[PAWNS] & pos.side[pos.turn]);
-
-		if ((1ULL << target) & ~pin[origin])
-			move[moves++] = move::encode(origin, target, NONE, PAWNS, NONE, pos.turn);
-
-		targets &= targets - 1;
-	}
-
-	// double push
-
-	auto targets2x{ bit::shift(pushes & bit::rank[relative::rank(R3, pos.turn)], shift::push[pos.turn]) & evasions & mask };
-	while (targets2x)
-	{
-		auto target{ bit::scan(targets2x) };
-		auto origin{ target - shift::push2x[pos.turn * 2] };
-		assert((1ULL << origin) & pos.pieces[PAWNS] & pos.side[pos.turn]);
-
-		if ((1ULL << target) & ~pin[origin])
-			move[moves++] = move::encode(origin, target, DOUBLEPUSH, PAWNS, NONE, pos.turn);
-
-		targets2x &= targets2x - 1;
-	}
-}
-
-void gen::knight(uint64 mask)
-{
-	auto pieces{ pos.pieces[KNIGHTS] & pos.side[pos.turn] & king_color };
-	while (pieces)
-	{
-		auto sq1{ bit::scan(pieces) };
-		auto targets{ attack::knight_map[sq1] & mask & evasions & ~pin[sq1] };
+		bit64 targets{ mask & bit::shift(pos.pieces[piece::pawn] & pos.side[pos.cl] & pawn.mask[pos.cl],
+			pawn.shift[pos.cl]) };
+		if constexpr (st == stage::quiet)
+			if (pawn.shift == shift::push2x)
+				targets &= ~bit::shift(bit::rank_push2x[pos.cl] & pos.side[both], shift::push1x[pos.cl]);
 
 		while (targets)
 		{
-			auto sq2{ bit::scan(targets) };
-			move[moves++] = move::encode(sq1, sq2, NONE, KNIGHTS, pos.piece[sq2], pos.turn);
-			targets &= targets - 1;
-		}
-		pieces &= pieces - 1;
-	}
-}
+			square sq2{ bit::scan(targets) };
+			square sq1{ sq2 - pawn.shift[0] * (1 - 2 * pos.cl) };
+			piece vc{ pos.piece_on[sq2] };
+			if constexpr (st == stage::enpassant)
+				vc = piece::pawn;
 
-void gen::bishop(uint64 mask)
-{
-	auto pieces{ pos.pieces[BISHOPS] & pos.side[pos.turn] & king_color };
-	while (pieces)
-	{
-		auto sq1{ bit::scan(pieces) };
-		auto targets{ attack::by_slider<BISHOP>(sq1, pos.side[BOTH]) & mask & evasions & ~pin[sq1] };
-
-		while (targets)
-		{
-			auto sq2{ bit::scan(targets) };
-			move[moves++] = move::encode(sq1, sq2, NONE, BISHOPS, pos.piece[sq2], pos.turn);
-			targets &= targets - 1;
-		}
-		pieces &= pieces - 1;
-	}
-}
-
-void gen::rook(uint64 mask)
-{
-	auto pieces{ pos.pieces[ROOKS] & pos.side[pos.turn] };
-	while (pieces)
-	{
-		auto sq1{ bit::scan(pieces) };
-		auto targets{ attack::by_slider<ROOK>(sq1, pos.side[BOTH]) & mask & evasions & ~pin[sq1] };
-
-		while (targets)
-		{
-			auto sq2{ bit::scan(targets) };
-			move[moves++] = move::encode(sq1, sq2, NONE, ROOKS, pos.piece[sq2], pos.turn);
-			targets &= targets - 1;
-		}
-		pieces &= pieces - 1;
-	}
-}
-
-void gen::queen(uint64 mask)
-{
-	auto pieces{ pos.pieces[QUEENS] & pos.side[pos.turn] };
-	while (pieces)
-	{
-		auto sq1{ bit::scan(pieces) };
-		auto targets{ attack::by_slider<QUEEN>(sq1, pos.side[BOTH]) & mask & evasions & ~pin[sq1] };
-
-		while (targets)
-		{
-			auto sq2{ bit::scan(targets) };
-			move[moves++] = move::encode(sq1, sq2, NONE, QUEENS, pos.piece[sq2], pos.turn);
-			targets &= targets - 1;
-		}
-		pieces &= pieces - 1;
-	}
-}
-
-void gen::king(uint64 mask)
-{
-	// normal king moves
-
-	auto sq1{ pos.sq_king[pos.turn] };
-	auto targets{ attack::check(pos, pos.turn, attack::king_map[sq1] & mask & ~pin[sq1]) };
-	while (targets)
-	{
-		auto sq2{ bit::scan(targets) };
-		move[moves++] = move::encode(sq1, sq2, NONE, KINGS, pos.piece[sq2], pos.turn);
-		targets &= targets - 1;
-	}
-
-	// castling moves, chess960 compliant and an ugly mess
-
-	if (mask != pos.side[pos.xturn] && ~pin[sq1])
-	{
-		// castling king-side
-
-		if (pos.castling_right[pos.turn] != PROHIBITED)
-		{
-			auto king_target_bit{ 1ULL << square::king_target[pos.turn][0] };
-			auto rook_bit{ 1ULL << pos.castling_right[pos.turn] };
-
-			auto bound_max{ 1ULL << std::max(static_cast<uint8>(square::rook_target[pos.turn][0] + 1), sq1) };
-			auto bound_min{ std::min(king_target_bit, rook_bit) };
-			auto occupancy{ pos.side[BOTH] ^ (1ULL << sq1 | rook_bit) };
-
-			if (!(((bound_max - 1) & ~(bound_min - 1)) & occupancy))
+			if (bit::set(sq2) & ~pin[sq1])
 			{
-				auto no_check_zone{ ((1ULL << (sq1 + 1)) - 1) & ~(king_target_bit - 1) };
-				pos.side[BOTH] ^= rook_bit;
-
-				if(attack::check(pos, pos.turn, no_check_zone) == no_check_zone)
-					move[moves++] = move::encode(sq1, pos.castling_right[pos.turn], CASTLE_SHORT, KINGS, NONE, pos.turn);
-
-				pos.side[BOTH] ^= rook_bit;
+				if constexpr (st == stage::quiet_promo_all || st == stage::capture_promo_all)
+					for (flag fl{ pawn.fl }; fl >= promo_knight; fl = fl - 1)
+						mv[cnt.mv++] = move{ sq1, sq2, piece::pawn, vc, pos.cl, fl };
+				else
+					mv[cnt.mv++] = move{ sq1, sq2, piece::pawn, vc, pos.cl, pawn.fl };
 			}
+			targets &= targets - 1;
+		}
+	}
+}
+
+template<mode md> template<stage st> void gen<md>::pieces(std::initializer_list<piece> pc)
+{
+	// generating piece moves
+
+	bit64 mask{ bit::max };
+	if constexpr (st == stage::capture)
+		mask &= pos.side[pos.cl_x];
+	if constexpr (st == stage::quiet)
+		mask &= ~pos.side[both];
+
+	for (piece p : pc)
+	{
+		bit64 pieces{ pos.pieces[p] & pos.side[pos.cl] };
+		bit64 ev{ p != king ? evasions : bit::max };
+		while (pieces)
+		{
+			square sq1{ bit::scan(pieces) };
+			bit64 targets{ attack::by_piece(p, sq1, pos.cl, pos.side[both]) & mask & ev & ~pin[sq1] };
+
+			if (p == king)
+				targets = attack::check(pos, pos.cl, targets);
+
+			while (targets)
+			{
+				square sq2{ bit::scan(targets) };
+				mv[cnt.mv++] = move{ sq1, sq2, p, pos.piece_on[sq2], pos.cl, no_flag };
+				targets &= targets - 1;
+			}
+			pieces &= pieces - 1;
+		}
+	}
+}
+
+template<mode md> void gen<md>::castle()
+{
+	// generating castling moves
+
+	for (flag fl : { castle_east, castle_west})
+	{
+		if (pos.castle_right[pos.cl][fl] == prohibited)
+			continue;
+
+		square king_sq1{ pos.sq_king[pos.cl] };
+		square king_sq2{ move::king_target[pos.cl][fl] };
+		square rook_sq1{ pos.castle_right[pos.cl][fl] };
+		square rook_sq2{ move::rook_target[pos.cl][fl] };
+		square sq_max{}, sq_min{};
+
+		if (fl == castle_east)
+		{
+			sq_max = std::max(king_sq1, rook_sq2);
+			sq_min = std::min(king_sq2, rook_sq1);
+		}
+		else
+		{
+			sq_max = std::max(king_sq2, rook_sq1);
+			sq_min = std::min(king_sq1, rook_sq2);
 		}
 
-		// castling queen-side, even a bigger mess
-
-		if (pos.castling_right[pos.turn + 2] != PROHIBITED)
+		bit64 occ{ pos.side[both] ^ (bit::set(king_sq1) | bit::set(rook_sq1)) };
+		if (!(bit::between[sq_max][sq_min] & occ))
 		{
-			auto rook_bit{ 1ULL << pos.castling_right[pos.turn + 2] };
+			// castling generation is always legal
 
-			auto bound_max{ 1ULL << std::max(static_cast<uint8>(square::king_target[pos.turn][1] + 1), pos.castling_right[pos.turn + 2]) };
-			auto bound_min{ 1ULL << std::min(square::rook_target[pos.turn][1], sq1) };
-			auto occupancy{ pos.side[BOTH] ^ ((1ULL << sq1) | rook_bit) };
-
-			if (!(((bound_max - 1) & ~(bound_min - 1)) & occupancy))
+			bool no_check{ true };
+			bit64 king_path{ bit::between[king_sq1][king_sq2] };
+			while (king_path)
 			{
-				auto no_check_zone
+				square sq{ bit::scan(king_path) };
+				if (attack::sq(pos, sq, occ) & pos.side[pos.cl_x])
 				{
-					(1ULL << sq1) | (1ULL << square::king_target[pos.turn][1])
-					| (((1ULL << square::king_target[pos.turn][1]) - 1) & ~((1ULL << sq1) - 1))
-				};
-				pos.side[BOTH] ^= rook_bit;
-
-				if (attack::check(pos, pos.turn, no_check_zone) == no_check_zone)
-					move[moves++] = move::encode(sq1, pos.castling_right[pos.turn + 2], CASTLE_LONG, KINGS, NONE, pos.turn);
-
-				pos.side[BOTH] ^= rook_bit;
+					no_check = false;
+					break;
+				}
+				king_path &= king_path - 1;
 			}
+			if (no_check)
+				mv[cnt.mv++] = move{ king_sq1, rook_sq1, king, no_piece, pos.cl, fl };
 		}
 	}
 }
