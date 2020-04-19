@@ -7,7 +7,7 @@ Monolith is rather a new original implementation of many well-established concep
 
 Playing against the top-notch chess engines leading the rating lists, Monolith will have not much of a winning chance. That picture however is totally different when playing against humans, be it hobby-players or chess Grandmasters, who almost certainly wont stand a chance against Monolith.
 
-Monolith is not a standalone chess program and needs a graphical interface in order to be used properly, for example the freely available [Arena](http://www.playwitharena.de), [Cute Chess](https://github.com/cutechess/cutechess) and [Tarrash](https://www.triplehappy.com) for PCs or [Chess for Android](https://play.google.com/store/apps/details?id=com.google.android.chess) and [DroidFish](https://play.google.com/store/apps/details?id=org.petero.droidfish) for Android devices.
+Monolith is not a standalone chess program and needs a graphical interface in order to be used properly, for example the freely available [Arena](http://www.playwitharena.de), [Cute Chess](https://github.com/cutechess/cutechess) and [Tarrash](https://www.triplehappy.com) for PCs or [DroidFish](https://play.google.com/store/apps/details?id=org.petero.droidfish) and [Chess for Android](https://play.google.com/store/apps/details?id=com.google.android.chess) for Android devices.
 
 
 ## Strength
