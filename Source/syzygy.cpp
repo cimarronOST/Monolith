@@ -176,6 +176,16 @@ namespace
 	constexpr int wdl_to_score[]{ tb_loss, blessed_loss, draw, cursed_win, tb_win };
 	constexpr int wdl_to_map[]{  1,    3, 0,   2, 0 };
 	constexpr int wdl_to_dtz[]{ -1, -101, 0, 101, 1 };
+	
+	// differentiating OS-specific elements of the path-string
+
+#if !defined(_WIN32)
+	constexpr char path_sep{ ':' };
+	constexpr char  end_sep{ '/' };
+#else
+	constexpr char path_sep{ ';' };
+	constexpr char  end_sep{ '\\' };
+#endif
 }
 
 // encryption arrays
@@ -454,7 +464,7 @@ namespace tbcore
 
 		for (auto& p : paths)
 		{
-			std::string fullpath{ p + "\\" + name };
+			std::string fullpath{ p + end_sep + name };
 			FD fd(memory::open_tb(fullpath));
 			if (fd != fd_error) return fd;
 		}
@@ -1326,15 +1336,9 @@ void syzygy::init_tb(const std::string& path)
 	path_string = path;
 	if (path_string.empty() || path_string == "<empty>") return;
 
-#if !defined(_WIN32)
-	char sep{ ':' };
-#else
-	char sep{ ';' };
-#endif
-
 	for (uint32 i{ 1 }, j{}; i < path_string.size(); ++i)
 	{
-		if (i + 1 == path_string.size() || path_string[i + 1] == sep)
+		if (i + 1 == path_string.size() || path_string[i + 1] == path_sep)
 		{
 			paths.push_back(path_string.substr(j, i + 1 - j));
 			j = i + 2;
