@@ -1,7 +1,7 @@
 # Monolith 2
 
 Monolith is a powerful open source chess engine written in C++17, compliant with the Universal Chess Interface (UCI) protocol.
-It uses the traditional alpha-beta search algorithm. The search and parallelization-algorithms, the position evaluation principles,
+It uses the alpha-beta search algorithm. The search and parallelization-algorithms, the position evaluation principles,
 the fast move-generating methods, the support for opening books and endgame table-bases, all of it wasn't newly invented in this engine.
 Monolith is rather a new original implementation of many well-established concepts of computer chess, resulting in its own unique personality as a chess playing entity.
 
