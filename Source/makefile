@@ -67,7 +67,7 @@ endif
 OS = $(shell uname -s)
 
 ifneq ($(ARCH),native)
-    ANNEX = -$(ARCH)
+    NAME := $(NAME)-$(ARCH)
 endif
 
 ifeq ($(ARCH),$(filter $(ARCH),armv7 armv8))
@@ -83,11 +83,13 @@ ifeq ($(OS),Linux)
     CFLAGS += -flto
 endif
 
-ifneq ($(OS),Linux)
 ifneq ($(OS),Android)
-    CFLAGS += -static
-    ANNEX   = -$(ARCH).exe
-endif
+    ifeq ($(OS),Linux)
+        RFLAGS += -static -lrt -Wl,--whole-archive -lpthread -Wl,--no-whole-archive
+    else
+        CFLAGS += -static
+        NAME   := $(NAME).exe
+    endif
 endif
 
 # compiler specific additions
@@ -102,20 +104,21 @@ endif
 
 # targets
 
-all: release
+all:
+	$(COMP) $(CFLAGS) $(WFLAGS) -DNDEBUG $(SOURCE) $(LFLAGS) -o $(NAME)
 
 release:
-	$(COMP) $(CFLAGS) $(WFLAGS) -DNDEBUG $(SOURCE) $(LFLAGS) -o $(NAME)$(ANNEX)
+	$(COMP) $(CFLAGS) $(WFLAGS) $(RFLAGS) -DNDEBUG $(SOURCE) $(LFLAGS) -o $(NAME)
 
 debug:
-	$(COMP) $(CFLAGS) $(WFLAGS) $(SOURCE) $(LFLAGS) -o $(NAME)$(ANNEX)
+	$(COMP) $(CFLAGS) $(WFLAGS) $(SOURCE) $(LFLAGS) -o $(NAME)
 
 debug_deep:
-	$(COMP) $(CFLAGS) $(WFLAGS) -DDEBUG_DEEP $(SOURCE) $(LFLAGS) -o $(NAME)$(ANNEX)
+	$(COMP) $(CFLAGS) $(WFLAGS) -DDEBUG_DEEP $(SOURCE) $(LFLAGS) -o $(NAME)
 
 tune:
-	$(COMP) $(CFLAGS) $(WFLAGS) -DNDEBUG -DTUNE $(SOURCE) $(LFLAGS) -o $(NAME)-tune-$(ANNEX)
+	$(COMP) $(CFLAGS) $(WFLAGS) -DNDEBUG -DTUNE $(SOURCE) $(LFLAGS) -o $(NAME)
 
 help:
-	@echo "make release [ARCH=architecture] [COMP=compiler]"
+	@echo "make [ARCH=architecture] [COMP=compiler]"
 	@echo "see readme.md for more details"
