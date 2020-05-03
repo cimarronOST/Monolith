@@ -17,7 +17,7 @@
 */
 
 
-// all credits for the Texel tuning approach go to Peter Österlund:
+// all credits for the Texel tuning approach go to Peter Ã–sterlund:
 // https://www.chessprogramming.org/Texel%27s_Tuning_Method
 
 #include "texel.h"
@@ -309,13 +309,13 @@ namespace texel
 		for (auto& t : threads)
 		{
 			t = std::thread{ eval_error_range, std::ref(texel_pos), std::ref(error), k,
-				int(std::floor(range_min)), int(std::floor(range_min + share)) };
+				int(std::floor(range_min)), int(std::floor(range_min + share) - 1) };
 			range_min += share;
 		}
 		for (auto& t : threads)
 			t.join();
 
-		verify(std::size_t(std::floor(range_min)) + 1 == texel_pos.size());
+		verify(std::size_t(std::floor(range_min)) == texel_pos.size());
 		return error / double(texel_pos.size());
 	}
 
