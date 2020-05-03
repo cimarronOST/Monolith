@@ -39,7 +39,7 @@ void verify_expr(const bool& condition, const char* expression, const char* file
     abort();
 }
 
-int main(int, char* argv[])
+int main()
 {
 	std::cout << "Monolith " << uci::version_number << std::endl;
 
@@ -47,11 +47,11 @@ int main(int, char* argv[])
 
 	bit::init_masks();
 	zobrist::init_keys();
-    trans::create(uci::hash_size);
+	trans::create(uci::hash_size);
 	magic::init_table();
-	filesystem::init_path(argv);
+	filesystem::init_path();
 	eval::mirror_tables();
-    search::init_tables();
+	search::init_tables();
 	syzygy::init_tb(uci::syzygy.path);
 
 	uci::loop();
