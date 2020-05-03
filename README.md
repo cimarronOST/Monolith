@@ -11,10 +11,9 @@ Monolith is not a standalone chess program and needs a graphical interface in or
 
 
 ## Strength
-Monolith 1 is ranked at around 2850 Elo on [CCRL 40/15](https://www.computerchess.org.uk/ccrl/4040/cgi/engine_details.cgi?print=Details&each_game=1&eng=Monolith%201.0%2064-bit%204CPU#Monolith_1_0_64-bit_4CPU) and 2910 Elo on [CCRL Blitz](https://www.computerchess.org.uk/ccrl/404/cgi/engine_details.cgi?print=Details&each_game=1&eng=Monolith%201.0%2064-bit%204CPU#Monolith_1_0_64-bit_4CPU).\
-Monolith 2 is considerably stronger in bullet games:
-> Score of Monolith 2 vs Monolith 1: 6949 - 886 - 2165  [0.803] 10000\
-Elo difference: 244.26 +/- 6.94
+Monolith 2 running on a single CPU-thread is ranked at around 3000 Elo on [CCRL 40/15](https://www.computerchess.org.uk/ccrl/4040/cgi/engine_details.cgi?print=Details&each_game=1&eng=Monolith%202%2064-bit#Monolith_2_64-bit),
+2980 Elo on [CCRL Blitz](https://www.computerchess.org.uk/ccrl/404/cgi/engine_details.cgi?match_length=30&each_game=1&print=Details&each_game=1&eng=Monolith%202%2064-bit#Monolith_2_64-bit)
+and 3120 Elo on [CCRL 40/2 FRC](https://www.computerchess.org.uk/ccrl/404FRC/cgi/engine_details.cgi?print=Details&each_game=1&eng=Monolith%202%2064-bit#Monolith_2_64-bit).
 
 
 ## Main features
@@ -39,7 +38,7 @@ Elo difference: 244.26 +/- 6.94
 
 
 #### You can compile it yourself
-Run `make release [ARCH=architecture] [COMP=compiler]`
+Run `make [ARCH=architecture] [COMP=compiler]`
 - supported architectures, see above for more detailed descriptions:\
 `x64-pext`, `x64-popcnt`, `x64`, `x86`, `armv8`, `armv7`;
 - some supported compilers:
@@ -67,7 +66,7 @@ Running the Monolith `bench` command should result in a total of `22296396` node
 - **`SyzygyProbeLimit`**: Number of pieces that have to be on the board in the endgame before the table-bases are probed. Default is `7` which is the upper limit of pieces that Syzygy table-bases currently support.
 
 
-### Additional unofficial commands
+#### Additional unofficial commands
 - `bench`: Running a couple of benchmark searches of an internal set of various positions.
 - `perft [depth]`: Running perft up to [depth] on the current position.
 - `eval`: Computing the static evaluation of the current position without the use of the search function.
