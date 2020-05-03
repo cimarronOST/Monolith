@@ -174,7 +174,7 @@ inline std::istream& operator >>(std::istream& is, milliseconds& time) { int t{}
 namespace lim
 {
 	constexpr int64 nodes{ std::numeric_limits<int64>::max() };
-	constexpr int threads{ 128 };
+	constexpr int threads{ 256 };
 	constexpr int syzygy_pieces{ 7 };
 
 	constexpr milliseconds movetime{ milliseconds::max() };

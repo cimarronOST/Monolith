@@ -156,7 +156,7 @@ namespace magic
 
 				for (int p{}; !fail && p < permutations; ++p)
 				{
-					int index{ static_cast<int>(blocker[sq.offset + p] * sq.magic >> sq.shift) };
+					int index{ int(blocker[sq.offset + p] * sq.magic >> sq.shift) };
 					verify(index <= permutations);
 
 					if (!save_attack[index])

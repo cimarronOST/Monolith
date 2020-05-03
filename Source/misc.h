@@ -25,20 +25,13 @@
 #include "types.h"
 #include "main.h"
 
-// the Android NDK doesn't support the standard library <filesystem> yet
-
-#if !defined(__ANDROID__)
-#include <filesystem>
-#else
-#include <errno.h>
-#endif
-
 #if defined(_WIN32)
 #define WIN32_LEAN_AND_MEAN
 #ifndef NOMINMAX
 #define NOMINMAX
 #endif
 #include <windows.h>
+#include <direct.h>
 #define fd_error INVALID_HANDLE_VALUE
 
 using mem_map = HANDLE;
@@ -62,7 +55,7 @@ namespace filesystem
 	// keeping track of the binary file location
 
 	extern std::string path;
-	void init_path(char* argv[]);
+	void init_path();
 }
 
 // providing memory functionality

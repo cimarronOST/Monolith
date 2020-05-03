@@ -23,26 +23,27 @@
 
 std::string filesystem::path{};
 
-void filesystem::init_path([[maybe_unused]] char* argv[])
+void filesystem::init_path()
 {
-	// establishing the absolute path of the directory of the binary file
-	// the Android NDK doesn't support std::filesystem yet, therefore the workaround is needed
+	// establishing the current working directory
 
-#if defined(__ANDROID__)
-	path.resize(1024, '\0');
-	while (!getcwd(&path[0], path.size()))
+	path.resize(4096, '\0');
+
+#if defined(_WIN32)
+	auto ptr{ _getcwd(&path[0], path.size()) };
+	char sep = '\\';
+#else
+	auto ptr{ getcwd(&path[0], path.size()) };
+	char sep = '/';
+#endif
+
+	if (ptr == NULL)
 	{
-		if (errno != ERANGE)
-			return;
-		path.resize(path.size() * 2);
+		std::cout << "info string warning: could not retrieve current working directory" << std::endl;
+		return;
 	}
 	path.resize(path.find('\0'));
-	path += "/";
-
-#else
-	path = std::filesystem::absolute(argv[0]).string();
-	path.erase(path.find_last_of("\\") + 1, path.size());
-#endif
+	path += sep;
 }
 
 // interacting with the memory system
@@ -51,7 +52,7 @@ FD memory::open_tb(std::string name)
 {
 	// opening Syzygy tablebase
 
-#ifdef _WIN32
+#if defined(_WIN32)
 	return CreateFile(name.c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr, OPEN_EXISTING, FILE_FLAG_RANDOM_ACCESS, nullptr);
 #else
 	return open(name.c_str(), O_RDONLY);
@@ -62,7 +63,7 @@ void memory::close_tb(FD fd)
 {
 	// closing Syzygy tablebase
 
-#ifdef _WIN32
+#if defined(_WIN32)
 	CloseHandle(fd);
 #else
 	close(fd);
@@ -73,7 +74,7 @@ uint64 memory::size_tb(FD fd)
 {
 	// determining the size of the Syzygy tablebase
 
-#ifdef _WIN32
+#if defined(_WIN32)
 	DWORD size_high{};
 	DWORD size_low{ GetFileSize(fd, &size_high) };
 	return ((uint64)size_high << 32) | size_low;
@@ -89,7 +90,7 @@ void* memory::map(FD fd, mem_map& map)
 {
 	// mapping the file into virtual memory for fast access
 
-#ifdef _WIN32
+#if defined(_WIN32)
 	DWORD size_high{};
 	DWORD size_low{ GetFileSize(fd, &size_high) };
 	map = CreateFileMapping(fd, nullptr, PAGE_READONLY, size_high, size_low, nullptr);
@@ -112,7 +113,7 @@ void memory::unmap(void* data, mem_map& map)
 	if (!data)
 		return;
 
-#if defined (_WIN32)
+#if defined(_WIN32)
 	UnmapViewOfFile(data);
 	CloseHandle(map);
 #else
@@ -130,7 +131,6 @@ void memory::prefetch(char* p)
 #if defined(__INTEL_COMPILER)
 	__asm__("");
 #endif
-
 #if defined(__INTEL_COMPILER) || defined(_MSC_VER)
 	_mm_prefetch(p, _MM_HINT_T0);
 #else
