@@ -99,7 +99,7 @@ template<typename uint> uint book::read_int()
 
 	uint assembly{};
 	for (auto& b : buf)
-		assembly = (assembly << 8) | static_cast<uint8>(b);
+		assembly = (assembly << 8) | uint8(b);
 	return assembly;
 }
 
