@@ -11,9 +11,12 @@ Monolith is not a standalone chess program and needs a graphical interface in or
 
 
 ## Strength
-Monolith 2 running on a single CPU-thread is ranked at around 3000 Elo on [CCRL 40/15](https://www.computerchess.org.uk/ccrl/4040/cgi/engine_details.cgi?print=Details&each_game=1&eng=Monolith%202%2064-bit#Monolith_2_64-bit),
-2980 Elo on [CCRL Blitz](https://www.computerchess.org.uk/ccrl/404/cgi/engine_details.cgi?match_length=30&each_game=1&print=Details&each_game=1&eng=Monolith%202%2064-bit#Monolith_2_64-bit)
-and 3120 Elo on [CCRL 40/2 FRC](https://www.computerchess.org.uk/ccrl/404FRC/cgi/engine_details.cgi?print=Details&each_game=1&eng=Monolith%202%2064-bit#Monolith_2_64-bit).
+Rating list | CPU Threads | Approximate Elo
+--- | --- | ---
+[CCRL 40/15](https://www.computerchess.org.uk/ccrl/4040/cgi/engine_details.cgi?print=Details&each_game=1&eng=Monolith%202%2064-bit#Monolith_2_64-bit) | 1 | 3000
+[CCRL Blitz](https://www.computerchess.org.uk/ccrl/404/cgi/engine_details.cgi?print=Details&each_game=1&eng=Monolith%202%2064-bit%204CPU#Monolith_2_64-bit_4CPU) | 4 | 3100
+[CCRL 40/2 FRC](https://www.computerchess.org.uk/ccrl/404FRC/cgi/engine_details.cgi?print=Details&each_game=1&eng=Monolith%202%2064-bit#Monolith_2_64-bit) | 1 | 3120
+[TCEC](https://tcec-chess.com/ordo.txt) | 176 | 3350
 
 
 ## Main features
@@ -37,14 +40,14 @@ and 3120 Elo on [CCRL 40/2 FRC](https://www.computerchess.org.uk/ccrl/404FRC/cgi
 - **armv7** targets the 32-bit ARM architecture and runs also on old Android devices.
 
 
-#### You can compile it yourself
+### You can compile it yourself
 Run `make [ARCH=architecture] [COMP=compiler]`
 - supported architectures, see above for more detailed descriptions:\
-`x64-pext`, `x64-popcnt`, `x64`, `x86`, `armv8`, `armv7`;
-- some supported compilers:
-  - `g++` (default): GNU C++ compiler
-  - `clang++`: Clang C++ compiler
-  - `icpc`: Intel C++ compiler
+`x64-pext`, `x64-popcnt`, `x64`, `x86`, `armv8`, `armv7`;\
+Omitting `ARCH` will use the `-march=native` flag and hopefully optimize the build for the building machine.
+- some supported compilers:\
+`g++`, `icpc`, `clang++`, `armv7a-linux-androideabi16-clang++`, `aarch64-linux-android21-clang++`;\
+Omitting `COMP` will use `g++` as default.
 
 Running the Monolith `bench` command should result in a total of `22296396` nodes if compiled correctly.
 
