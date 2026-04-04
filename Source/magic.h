@@ -1,6 +1,5 @@
 /*
-  Monolith 2 Copyright (C) 2017-2020 Jonas Mayr
-  This file is part of Monolith.
+  Monolith Copyright (C) 2017-2026 Jonas Mayr
 
   Monolith is free software: you can redistribute it and/or modify
   it under the terms of the GNU General Public License as published by
@@ -19,8 +18,10 @@
 
 #pragma once
 
+#include <array>
+#include <vector>
+
 #include "types.h"
-#include "main.h"
 
 // setting up the magic index function for fast move generation of sliding pieces
 // the tables are indexed using the "fancy" approach:
@@ -39,12 +40,12 @@ namespace magic
 		int shift;
 	};
 
-	enum piece { bishop, rook };
+	enum piece { BISHOP, ROOK };
 
 	// tables with all information for magic move generation after initialization
 
-	extern std::array<std::array<sq_entry, 64>, 2> slider;
-	extern std::vector<bit64> attack_table;
+	inline std::array<std::array<sq_entry, 2>, 64> slider{};
+	inline std::vector<bit64> attack_table{};
 
 	// indexing the magic number attack tables
 

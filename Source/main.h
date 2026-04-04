@@ -1,6 +1,5 @@
 /*
-  Monolith 2 Copyright (C) 2017-2020 Jonas Mayr
-  This file is part of Monolith.
+  Monolith Copyright (C) 2017-2026 Jonas Mayr
 
   Monolith is free software: you can redistribute it and/or modify
   it under the terms of the GNU General Public License as published by
@@ -19,36 +18,26 @@
 
 #pragma once
 
-// including library files to be accessible by all other source files
-
-#include <tuple>
-#include <string>
-#include <array>
-#include <vector>
-#include <chrono>
-#include <limits>
 #include <iostream>
-#include <algorithm>
-
-using std::chrono::milliseconds;
 
 // defining a verification macro similar to assert() to facilitate debugging
 
-void verify_expr(const bool& condition, const char* expression, const char* file, unsigned long line);
+namespace
+{
+    [[maybe_unused]] void verify_expr(const bool& condition, const char* expr, const char* file, unsigned long line)
+    {
+        // if an expression cannot be verified, the output with information about the failed expression
+        // can be redirected to a log file with the UCI command 'setoption Log value true'
+
+        if (!(!condition))
+            return;
+        std::cout << "verification '" << expr << "' failed in file " << file << " line " << line << std::endl;
+        abort();
+    }
+}
 
 #if !defined(NDEBUG)
 #define verify(expr) (verify_expr(expr, #expr, __FILE__, __LINE__))
-
 #else
 #define verify(expr) ((void)0)
-#endif
-
-// defining an additional verification macro for runtime-expensive expressions which have a big impact
-// on the speed of the engine
-
-#if defined(DEBUG_DEEP)
-#define verify_deep(expr) (verify(expr))
-
-#else
-#define verify_deep(expr) ((void)0)
 #endif

@@ -1,6 +1,5 @@
 /*
-  Monolith 2 Copyright (C) 2017-2020 Jonas Mayr
-  This file is part of Monolith.
+  Monolith Copyright (C) 2017-2026 Jonas Mayr
 
   Monolith is free software: you can redistribute it and/or modify
   it under the terms of the GNU General Public License as published by
@@ -17,6 +16,11 @@
 */
 
 
+#include <string>
+#include <algorithm>
+#include <cmath>
+
+#include "main.h"
 #include "types.h"
 
 file type::fl_of(square sq)
@@ -35,7 +39,7 @@ rank type::rk_of(square sq)
 	return rank(sq >> 3);
 }
 
-rank type::rel_rk_of(rank rk, color cl)
+rank type::rk_of(rank rk, color cl)
 {
 	// determining the rank of a piece relative to its color
 

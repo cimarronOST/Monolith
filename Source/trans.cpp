@@ -1,6 +1,5 @@
 /*
-  Monolith 2 Copyright (C) 2017-2020 Jonas Mayr
-  This file is part of Monolith.
+  Monolith Copyright (C) 2017-2026 Jonas Mayr
 
   Monolith is free software: you can redistribute it and/or modify
   it under the terms of the GNU General Public License as published by
@@ -17,9 +16,17 @@
 */
 
 
-#include <cstdlib>
 #include <cstring>
+#include <memory>
+#include <iostream>
+#include <vector>
+#include <thread>
+#include <tuple>
+#include <algorithm>
 
+#include "main.h"
+#include "types.h"
+#include "move.h"
 #include "uci.h"
 #include "trans.h"
 
@@ -31,22 +38,33 @@ std::unique_ptr<trans::hash[], trans::std_free> trans::table{};
 uint64 trans::size{};
 uint64 trans::mask{};
 
+void trans::hash::update_key(const key64& new_key)
+{
+	key = new_key ^ data;
+}
+
+void trans::hash::update_age(int new_age)
+{
+	data &= 0xffffffffffff8000ULL;
+	data |= new_age & 0x7fff;
+}
+
 namespace compress
 {
 	// compressing the data to fit into the 8 data bytes of a table entry
 
-	uint64 data(score sc, move mv, depth dt, bound bd, int age)
+	static uint64 data(score sc, move mv, depth dt, bound bd, int age)
 	{
 		verify(type::sc(sc));
 		verify((mv.raw() >> 24) == 0U);
 		verify(type::dt(dt));
-		verify(bd == bound::exact || bd == bound::upper || bd == bound::lower);
+		verify(bd == bound::EXACT || bd == bound::UPPER || bd == bound::LOWER);
 		verify(age >= 0);
-		return (uint64(sc - score::none) << 48)
-			| (uint64(mv.raw()) << 24)
-			| (uint64(dt) << 17)
-			| (uint64(bd) << 15)
-			| (uint64(age) & 0x7fff);
+        return (uint64(sc - score::NONE) << 48)
+			 | (uint64(mv.raw()) << 24)
+			 | (uint64(dt) << 17)
+			 | (uint64(bd) << 15)
+			 | (uint64(age) & 0x7fff);
 	}
 }
 
@@ -54,53 +72,35 @@ namespace get
 {
 	// decompressing the 8 data bytes of a table entry
 
-	score sc(uint64& data)
+	static score sc(uint64& data)
 	{
-		score sc{ score(data >> 48) + score::none };
+		score sc{ score(data >> 48) + score::NONE };
 		verify(type::sc(sc));
 		return sc;
 	}
 
-	move mv(uint64& data)
+	static move mv(uint64& data)
 	{
 		return move{ uint32((data >> 24) & 0xffffffU) };
 	}
 
-	depth dt(uint64& data)
+	static depth dt(uint64& data)
 	{
 		depth dt{ depth(data >> 17) & 0x7f };
 		verify(type::dt(dt));
 		return dt;
 	}
 
-	bound bd(uint64& data)
+	static bound bd(uint64& data)
 	{
 		bound bd{ bound((data >> 15) & 0x3) };
-		verify(bd == bound::exact || bd == bound::upper || bd == bound::lower);
+		verify(bd == bound::EXACT || bd == bound::UPPER || bd == bound::LOWER);
 		return bd;
 	}
 
-	int age(uint64& data)
+	static int age(uint64& data)
 	{
 		return int(data & 0x7fff);
-	}
-}
-
-namespace update
-{
-	void age(uint64& data, int new_age)
-	{
-		// updating the entry's age at every hash hit
-
-		data &= 0xffffffffffff8000ULL;
-		data |= new_age & 0x7fff;
-	}
-
-	void key(key64& key, const uint64& data, const key64& key_pos)
-	{
-		// updating the key whenever an entry's data gets updated
-
-		key = key_pos ^ data;
 	}
 }
 
@@ -147,43 +147,45 @@ std::size_t trans::create(std::size_t megabytes)
 void trans::clear()
 {
 	// clearing the hash table
-	// since the speed of this call is crucial for dealing with a large hash table, memset is called
 
-	std::memset(&table[0], 0, (std::size_t)size * sizeof(hash));
+	auto chunk{ size / uci::thread_cnt };
+	std::vector<std::thread> threads;
+
+	for (int idx{}; idx < uci::thread_cnt; ++idx)
+		threads.emplace_back(&trans::clear_fast, this, idx, chunk);
+	for (auto& t : threads)
+		t.join();
 }
 
-void trans::store(const key64& key, move mv, score sc, bound bd, depth remaining_dt, depth curr_dt)
+void trans::clear_fast(int idx, uint64 chunk)
 {
-	// storing a transposition in the hash table
+	auto append{ idx == uci::thread_cnt - 1 ? size - chunk * idx : chunk };
+	verify(idx * chunk + append <= size);
+	std::memset(&table[idx * (size_t)chunk], 0, (size_t)append * sizeof(hash));
+}
 
-	verify(type::sc(sc));
-	verify(type::dt(remaining_dt));
-	verify(type::dt(curr_dt));
-	verify(bd == bound::exact || bd == bound::upper || bd == bound::lower);
-	verify(size - slots == mask);
-	verify((key & mask) < size);
-
-	// adjusting mate scores
-
-	if (sc >  score::longest_mate && bd != bound::upper) sc += curr_dt;
-	if (sc < -score::longest_mate && bd != bound::lower) sc -= curr_dt;
-
-	// probing the table slots
+trans::hash* trans::new_entry(const key64& key, move& new_mv, bound bd)
+{
+	// searching for the most suitable slot for storage
 
 	hash* entry{ get_entry(key) };
 	hash* new_entry{ entry };
-
 	score max_sc{ score(lim::dt + (uci::mv_cnt << 8)) };
 	score low_sc{ max_sc };
 
 	for (int i{}; i < slots; ++i, ++entry)
 	{
-		// always replacing an already existing entry
+		if (entry->key == 0ULL)
+			return entry;
 
-		if ((entry->key ^ entry->data) == key || entry->key == 0ULL)
+		// always replacing an already existing entry
+		// for fail-low nodes after a previous fail high, that move that failed high is stored (? Elo)
+
+		if ((entry->key ^ entry->data) == key)
 		{
-			new_entry = entry;
-			break;
+			if (bd == bound::UPPER && get::bd(entry->data) == bound::LOWER)
+				new_mv = get::mv(entry->data);
+			return entry;
 		}
 
 		// otherwise looking for the oldest and shallowest entry
@@ -196,19 +198,42 @@ void trans::store(const key64& key, move mv, score sc, bound bd, depth remaining
 		}
 
 		// always replacing entries "from the future" in case of moving backwards through a game while analyzing
-		// and the hash is not cleared before every search
+		// and not clearing the hash-table between searches
 
 		else if (new_sc > max_sc)
-		{
-			new_entry = entry;
-			break;
-		}
+			return entry;
 	}
+	return new_entry;
+}
 
-	// replacing the oldest and shallowest entry
+void trans::store(const key64& key, move mv, std::tuple<score, bound> bounded_sc, depth remaining_dt, depth curr_dt)
+{
+	// storing a transposition in the hash table
 
-	new_entry->data = compress::data(sc, mv, remaining_dt, bd, uci::mv_cnt);
-	update::key(new_entry->key, new_entry->data, key);
+	score sc{ std::get<0>(bounded_sc) };
+	bound bd{ std::get<1>(bounded_sc) };
+
+	verify(type::sc(sc));
+	verify(type::dt(remaining_dt));
+	verify(type::dt(curr_dt));
+	verify(bd == bound::EXACT || bd == bound::UPPER || bd == bound::LOWER);
+	verify(size - slots == mask);
+	verify((key & mask) < size);
+
+	// adjusting mate scores
+
+	if (sc >  LONGEST_MATE && bd != bound::UPPER) sc += curr_dt;
+	if (sc < -LONGEST_MATE && bd != bound::LOWER) sc -= curr_dt;
+
+	// probing the table for the best match out of the 4 possible slots
+
+	move  new_mv{ mv };
+	hash* entry{ new_entry(key, new_mv, bd) };
+
+	// storing the new entry
+
+	entry->data = compress::data(sc, new_mv, remaining_dt, bd, uci::mv_cnt);
+	entry->update_key(key);
 }
 
 trans::hash* trans::get_entry(const key64& key)
@@ -234,8 +259,8 @@ bool trans::entry::probe(const key64& key, depth curr_dt)
 	{
 		if ((entry->key ^ entry->data) == key)
 		{
-			update::age(entry->data, uci::mv_cnt);
-			update::key(entry->key, entry->data, key);
+			entry->update_age(uci::mv_cnt);
+			entry->update_key(key);
 
 			mv = get::mv(entry->data);
 			sc = get::sc(entry->data);
@@ -244,8 +269,8 @@ bool trans::entry::probe(const key64& key, depth curr_dt)
 
 			// adjusting mate scores
 
-			if (sc >  score::longest_mate && bd != bound::upper) sc -= curr_dt;
-			if (sc < -score::longest_mate && bd != bound::lower) sc += curr_dt;
+			if (sc >  LONGEST_MATE && bd != bound::UPPER) sc -= curr_dt;
+			if (sc < -LONGEST_MATE && bd != bound::LOWER) sc += curr_dt;
 
 			verify(entry->key);
 			verify(type::sc(sc));

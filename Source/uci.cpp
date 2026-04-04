@@ -1,6 +1,5 @@
 /*
-  Monolith 2 Copyright (C) 2017-2020 Jonas Mayr
-  This file is part of Monolith.
+  Monolith Copyright (C) 2017-2026 Jonas Mayr
 
   Monolith is free software: you can redistribute it and/or modify
   it under the terms of the GNU General Public License as published by
@@ -18,10 +17,21 @@
 
 
 #include <sstream>
+#include <string>
+#include <chrono>
+#include <algorithm>
+#include <iostream>
+#include <vector>
+#include <functional>
+#include <thread>
 
+#include "main.h"
+#include "types.h"
+#include "trans.h"
+#include "thread.h"
 #include "syzygy.h"
 #include "search.h"
-#include "texel.h"
+#include "tune.h"
 #include "eval.h"
 #include "misc.h"
 #include "time.h"
@@ -29,36 +39,6 @@
 #include "movegen.h"
 #include "board.h"
 #include "uci.h"
-
-// values depending on the 'setoption' command
-
-std::size_t uci::hash_size{ 128 };
-std::size_t uci::multipv{ 1 };
-int uci::thread_cnt{ 1 };
-milliseconds uci::overhead{};
-
-trans uci::hash_table{};
-uci::syzygy_settings uci::syzygy { "<empty>", 5, lim::syzygy_pieces };
-
-bool uci::use_abdada{ false };
-bool uci::ponder{ false };
-bool uci::chess960{ false };
-bool uci::log{ false };
-bool uci::use_book{ true };
-
-// values depending on the 'go' command
-
-bool uci::infinite{ false };
-uci::search_limit uci::limit{};
-
-// values depending on various other things
-
-bool uci::stop{ true };
-book uci::bk{};
-
-int uci::mv_cnt{};
-int uci::mv_offset{};
-std::array<key64, 256> uci::game_hash{};
 
 namespace
 {
@@ -77,29 +57,22 @@ namespace
 		return value ? "true" : "false";
 	}
 
-	std::string smp(bool use_abdada)
-	{
-		// displaying options ABDADA or Shared Hash Table
-
-		return use_abdada ? "ABDADA" : "SHT";
-	}
-
 	std::string show_sc(score sc, bound bd)
 	{
 		// showing the appropriate search score
 
-		if (sc == score::none) return "cp 0";
+		if (sc == score::NONE) return "cp 0";
 
 		std::string score{};
-		if (std::abs(sc) >= score::mate - 1000)
+		if (std::abs(sc) >= MATE - 1000)
 		{
-			int mate{ (sc > score::mate - 1000 ? score::mate + 1 - sc : -score::mate - 1 - sc) / 2 };
+			int mate{ (sc > MATE - 1000 ? MATE + 1 - sc : -MATE - 1 - sc) / 2 };
 			score = "mate " + std::to_string(mate);
 		}
 		else
 			score = "cp " + std::to_string(sc);
-		if (bd == bound::upper) score += " upperbound";
-		if (bd == bound::lower) score += " lowerbound";
+		if (bd == bound::UPPER) score += " upperbound";
+		if (bd == bound::LOWER) score += " lowerbound";
 		return score;
 	}
 
@@ -121,11 +94,11 @@ namespace
 	{
 		// showing the principal variation
 
-		if (pv.wrong)
+		if (pv.tb_root)
 			std::cout << pv.mv[0].algebraic();
 		else
 		{
-			for (depth dt{}; dt < pv.cnt; ++dt)
+			for (depth dt{}, dt_max{ std::min(pv.cnt, lim::dt) }; dt < dt_max; ++dt)
 				std::cout << pv.mv[dt].algebraic() << " ";
 		}
 	}
@@ -134,7 +107,7 @@ namespace
 	{
 		// converting the coordinate move-string to the internal move-representation
 
-		gen<mode::legal> list(pos);
+		gen<mode::LEGAL> list(pos);
 		list.gen_all();
 
 		for (int i{}; i < list.cnt.mv; ++i)
@@ -162,7 +135,7 @@ namespace
 		uci::mv_offset = pos.half_cnt ? uci::mv_offset + 1 : 0;
 		verify(uci::mv_offset <= pos.half_cnt);
 
-		uci::game_hash[uci::mv_offset] = pos.key;
+		uci::game_hash[uci::mv_offset] = pos.key.pos;
 	}
 
 	void set_position(board& pos, std::string fen)
@@ -172,7 +145,7 @@ namespace
 		reset_game();
 		pos.parse_fen(fen);
 		verify(uci::mv_offset == 0);
-		uci::game_hash[uci::mv_offset] = pos.key;
+		uci::game_hash[uci::mv_offset] = pos.key.pos;
 	}
 
 	void new_move(board& pos, move mv)
@@ -186,7 +159,7 @@ namespace
 
 namespace debug
 {
-	void bench(std::istringstream& input)
+	static void bench(std::istringstream& input)
 	{
 		// running a benchmark search
 
@@ -195,10 +168,11 @@ namespace debug
 		input >> filename;
 		input >> movetime;
 		reset_game();
+		uci::hash_table.clear();
 		bench::search(filename, movetime);
 	}
 
-	void perft(std::istringstream& input, board& pos)
+	static void perft(std::istringstream& input, board& pos)
 	{
 		// running perft
 
@@ -208,33 +182,52 @@ namespace debug
 		input >> mode;
 
 		if (mode == "pseudo")
-			bench::perft<mode::pseudolegal>(pos, dt);
+			bench::perft<mode::PSEUDOLEGAL>(pos, dt);
 		else
-			bench::perft<mode::legal>(pos, dt);
+			bench::perft<mode::LEGAL>(pos, dt);
 	}
 
-	void eval(const board& pos)
+	static void eval(const board& pos)
 	{
 		// doing a static evaluation of the current position
 
-		kingpawn_hash hash(kingpawn_hash::allocate_none);
+		kingpawn_hash hash(kingpawn_hash::ALLOCATE_NONE);
 		std::cout << double(eval::static_eval(pos, hash)) / 100.0 << std::endl;
 	}
 
-	void tune(std::istringstream& input)
+	static void tune(std::istringstream& input)
 	{
-		// running the internal tuner to tune the evaluation
+		// running the internal tuner to tune the evaluation function
 
 		reset_game();
+		uci::hash_table.clear();
 		uci::infinite = true;
 		uci::stop = false;
-		int thread_cnt{};
-		std::string filename{};
-		input >> filename;
-		input >> thread_cnt;
-		texel::tune(filename, thread_cnt);
+
+		std::vector<std::string> tuning_files{};
+		std::string file{};
+		while (input >> file)
+			tuning_files.emplace_back(file);
+		tune::evaluation(tuning_files, uci::thread_cnt);
+
 		uci::infinite = false;
 		uci::stop = true;
+
+		// running the internal benchmark search with the now tuned evaluation
+
+		bench(input);
+	}
+
+	[[maybe_unused]] static void show_search_params()
+	{
+		// printing all search parameters to tune with SPSA
+		
+#if !defined(NDEBUG)
+		for (auto& par : search::s_param)
+			std::cout << "\noption name " << par.name << " type spin default " << par.value
+			<< " min " << par.min << " max " << par.max;
+		std::cout << std::endl;
+#endif
 	}
 }
 
@@ -251,7 +244,7 @@ void uci::search_limit::set_infinite()
 
 namespace uci
 {
-	void uci()
+	static void uci()
 	{
 		// reacting to the 'uci' command
 		// outputting all available options of the engine
@@ -261,7 +254,6 @@ namespace uci
 			<< "\nid author Jonas Mayr\n"
 
 			<< "\noption name Threads type spin default " << thread_cnt << " min 1 max " << lim::threads
-			<< "\noption name SMP type combo default " << smp(use_abdada) << " var " << smp(true) << " var " << smp(false)
 			<< "\noption name Ponder type check default " << boolean(ponder)
 			<< "\noption name Hash type spin default " << hash_size << " min 2 max " << lim::hash
 			<< "\noption name Clear Hash type button"
@@ -271,27 +263,22 @@ namespace uci
 			<< "\noption name Move Overhead type spin default " << overhead << " min 0 max " << lim::overhead
 			<< "\noption name Log type check default " << boolean(log)
 
-			<< "\noption name OwnBook type check default " << boolean(use_book)
-			<< "\noption name Book File type string default " << bk.std_name
-
-			<< "\noption name SyzygyPath type string default " << syzygy.path
-			<< "\noption name SyzygyProbeDepth type spin default " << syzygy.dt << " min 1 max " << lim::dt
-			<< "\noption name SyzygyProbeLimit type spin default " << syzygy.pieces << " min 0 max " << lim::syzygy_pieces
+			<< "\noption name SyzygyPath type string default " << syzygy_path
+			<< "\noption name SyzygyProbeDepth type spin default " << syzygy_dt << " min 1 max " << lim::dt
 			<< std::endl;
 	}
 
-	void ucinewgame(board& pos, thread_pool& threads)
+	static void ucinewgame(board& pos, thread_pool& threads)
 	{
 		// responding to the 'ucinewgame' command
 		// setting up a new game
 
-		bk.hit = use_book;
 		hash_table.clear();
 		threads.clear_history();
 		set_position(pos, startpos);
 	}
 
-	void setoption(std::istringstream& input, thread_pool& threads)
+	static void setoption(std::istringstream& input, thread_pool& threads)
 	{
 		// parsing the 'setoption' command
 
@@ -321,17 +308,13 @@ namespace uci
 			threads.resize(thread_cnt);
 			threads.start_all();
 		}
-		else if (name == "SMP")
-		{
-			use_abdada = (value == "ABDADA");
-		}
 		else if (name == "Ponder")
 		{
 			ponder = boolean(value);
 		}
 		else if (name == "Move Overhead")
 		{
-			overhead = std::min(milliseconds(std::max(std::stoi(value), 0)), lim::overhead);
+			overhead = std::clamp(milliseconds(std::stoi(value)), milliseconds(0), lim::overhead);
 		}
 		else if (name == "UCI_Chess960")
 		{
@@ -339,15 +322,7 @@ namespace uci
 		}
 		else if (name == "MultiPV")
 		{
-			multipv = std::min(std::size_t(std::max(std::stoi(value), 1)), lim::multipv);
-		}
-		else if (name == "OwnBook")
-		{
-			use_book = bk.hit = boolean(value);
-		}
-		else if (name == "Book File")
-		{
-			bk.open(value);
+			multipv = std::clamp(std::size_t(std::stoi(value)), std::size_t(1), lim::multipv);
 		}
 		else if (name == "Log")
 		{
@@ -358,20 +333,31 @@ namespace uci
 		}
 		else if (name == "SyzygyPath")
 		{
-			syzygy.path = value;
-			syzygy::init_tb(syzygy.path);
+			syzygy_path = value;
+			syzygy::init_tb(syzygy_path);
 		}
 		else if (name == "SyzygyProbeDepth")
 		{
-			syzygy.dt = std::min(std::max(std::stoi(value), 1), lim::dt);
+			syzygy_dt = std::clamp(std::stoi(value), 1, lim::dt);
 		}
-		else if (name == "SyzygyProbeLimit")
+		else
 		{
-			syzygy.pieces = std::min(std::max(std::stoi(value), 0), lim::syzygy_pieces);
+			// setting the search parameters during SPSA tuning
+
+#if !defined(NDEBUG)
+			for (auto& par : search::s_param)
+			{
+				if (name == par.name)
+				{
+					par.value = std::stoi(value);
+					search::init_params();
+				}
+			}
+#endif
 		}
 	}
 
-	void position(std::istringstream& input, board& pos)
+	static void position(std::istringstream& input, board& pos)
 	{
 		// reacting to the 'position' command
 
@@ -399,26 +385,7 @@ namespace uci
 			new_move(pos, convert_mv(pos, token));
 	}
 
-	void search(thread_pool& threads, board& pos, timemanage::move_time movetime)
-	{
-		stop = false;
-		if (move bestmove{ bk.get_move(pos) }; bestmove)
-		{
-			// retrieving a book move
-
-			std::cout << "info string book hit" << std::endl << "bestmove " << bestmove.algebraic() << std::endl;
-			stop = true;
-		}
-		else
-		{
-			// starting the search if there is no book move
-
-			bk.hit = false;
-			threads.thread[0]->std_thread = std::thread{ search::start, std::ref(threads), movetime };
-		}
-	}
-
-	void searchmoves(std::istringstream& input, const board& pos)
+	static void searchmoves(std::istringstream& input, const board& pos)
 	{
 		// parsing the 'go searchmoves' command
 
@@ -440,7 +407,7 @@ namespace uci
 		}
 	}
 
-	void go(std::istringstream& input, thread_pool& threads, board& pos)
+	static void go(std::istringstream& input, thread_pool& threads, board& pos)
 	{
 		// applying specifications before starting the search after the 'go' command
 
@@ -457,21 +424,21 @@ namespace uci
 			}
 			else if (token == "wtime")
 			{
-				input >> chrono.time[white];
+				input >> chrono.time[WHITE];
 				chrono.restricted = false;
 			}
 			else if (token == "btime")
 			{
-				input >> chrono.time[black];
+				input >> chrono.time[BLACK];
 				chrono.restricted = false;
 			}
 			else if (token == "winc")
 			{
-				input >> chrono.incr[white];
+				input >> chrono.incr[WHITE];
 			}
 			else if (token == "binc")
 			{
-				input >> chrono.incr[black];
+				input >> chrono.incr[BLACK];
 			}
 			else if (token == "ponder")
 			{
@@ -487,13 +454,12 @@ namespace uci
 			else if (token == "nodes")
 			{
 				input >> limit.nodes;
-				if (chronometer::hit_threshold > limit.nodes / thread_cnt)
-					chronometer::hit_threshold = int(limit.nodes / thread_cnt);
+				chronometer::hit_threshold = thread_cnt;
 			}
 			else if (token == "depth")
 			{
 				input >> limit.dt;
-				limit.dt = std::min(std::max(limit.dt, 1), lim::dt);
+				limit.dt = std::clamp(limit.dt, 1, lim::dt);
 			}
 			else if (token == "mate")
 			{
@@ -509,7 +475,11 @@ namespace uci
 				infinite = true;
 			}
 		}
-		search(threads, pos, chrono.get_movetime(pos.cl));
+
+		// starting the search for the best move
+
+		stop = false;
+		threads.thread[0]->std_thread = std::jthread{ search::start, std::ref(threads), chrono.get_movetime(pos.cl) };
 	}
 }
 
@@ -523,7 +493,6 @@ void uci::loop()
 	thread_pool threads(thread_cnt, pos);
 	threads.start_all();
 	ucinewgame(pos, threads);
-	bk.open(bk.std_name);
 
 	do // communication loop
 	{
@@ -534,6 +503,7 @@ void uci::loop()
 		if (command == "uci")
 		{
 			uci::uci();
+			debug::show_search_params();
 			std::cout << "uciok" << std::endl;
 		}
 		else if (command == "isready")
@@ -542,36 +512,35 @@ void uci::loop()
 		}
 		else if (command == "ucinewgame")
 		{
-			if (!stop) continue;
-			threads.stop_search();
+			if (!threads.join_main()) continue;
 			ucinewgame(pos, threads);
 		}
 		else if (token == "position")
 		{
-			if (!stop) continue;
-			threads.stop_search();
+			if (!threads.join_main()) continue;
 			position(input, pos);
 		}
 		else if (token == "setoption")
 		{
-			if (!stop) continue;
-			threads.stop_search();
+			if (!threads.join_main()) continue;
 			setoption(input, threads);
 		}
 		else if (token == "go")
 		{
-			if(!stop) continue;
-			threads.stop_search();
+			if (!threads.join_main()) continue;
 			go(input, threads, pos);
 		}
 		else if (command == "stop")
 		{
-			threads.stop_search();
+			stop = true;
 			infinite = false;
+			cv.notify_one();
+			threads.join_main();
 		}
 		else if (command == "ponderhit")
 		{
 			infinite = false;
+			cv.notify_one();
 		}
 
 		// unofficial commands for debugging
@@ -616,25 +585,23 @@ void uci::loop()
 	} while (command != "quit");
 }
 
-void uci::info_iteration(sthread& thread, int mv_cnt)
+void uci::info_iteration(sthread& thread)
 {
-	// showing search informations after every iteration
+	// showing search information after every iteration
 
-	if (!thread.main())
-		return;
 	if (multipv > 1)
-		thread.rearrange_pv(mv_cnt);
+		thread.rearrange_pv();
 
 	milliseconds time{ thread.chrono.elapsed() };
 	int64 nodes{ thread.get_nodes() };
 
-	for (int i{}; i < (int)multipv && i < mv_cnt; ++i)
+	for (int i{}; i < (int)multipv && i < thread.cnt_root_mv; ++i)
 	{
 		std::cout << "info"
 			<< " depth "    << thread.pv[i].dt
-			<< " seldepth " << thread.pv[i].get_seldt()
+			<< " seldepth " << std::max(thread.seldt, thread.pv[i].dt)
 			<< show_multipv(i + 1)
-			<< " score "    << show_sc(thread.pv[i].sc, bound::none)
+			<< " score "    << show_sc(thread.pv[i].sc, bound::NONE)
 			<< " time "     << time
 			<< " nodes "    << nodes
 			<< " nps "      << nodes * 1000 / std::max((int64)time.count(), 1LL)
@@ -650,7 +617,7 @@ void uci::info_bound(sthread& thread, int pv_n, score sc, bound bd)
 	// showing search-bound information at every fail-high & fail-low inside the aspiration window
 
 	verify(type::sc(sc));
-	verify(bd == bound::upper || bd == bound::lower);
+	verify(bd == bound::UPPER || bd == bound::LOWER);
 
 	if (!thread.main())
 		return;
@@ -660,7 +627,7 @@ void uci::info_bound(sthread& thread, int pv_n, score sc, bound bd)
 
 	std::cout << "info"
 		<< " depth "    << thread.pv[pv_n].dt
-		<< " seldepth " << thread.pv[pv_n].get_seldt()
+		<< " seldepth " << std::max(thread.seldt, thread.pv[pv_n].dt)
 		<< show_multipv(pv_n + 1)
 		<< " score "    << show_sc(sc, bd)
 		<< " time "     << time
@@ -680,7 +647,7 @@ void uci::info_currmove(sthread& thread, int pv_n, move mv, int mv_n)
 	{
 		std::cout << "info"
 			<< " depth "          << thread.pv[pv_n].dt
-			<< " seldepth "       << thread.pv[pv_n].get_seldt()
+			<< " seldepth "       << std::max(thread.seldt, thread.pv[pv_n].dt)
 			<< show_multipv(pv_n + 1)
 			<< " currmove "       << mv.algebraic()
 			<< " currmovenumber " << mv_n

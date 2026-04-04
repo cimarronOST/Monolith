@@ -1,6 +1,5 @@
 /*
-  Monolith 2 Copyright (C) 2017-2020 Jonas Mayr
-  This file is part of Monolith.
+  Monolith Copyright (C) 2017-2026 Jonas Mayr
 
   Monolith is free software: you can redistribute it and/or modify
   it under the terms of the GNU General Public License as published by
@@ -17,6 +16,10 @@
 */
 
 
+#include <string>
+
+#include "main.h"
+#include "types.h"
 #include "uci.h"
 #include "move.h"
 
@@ -27,7 +30,7 @@ bool move::verify_move(square sq1, square sq2, piece pc, piece vc, color cl, fla
 	// checking the move for sanity
 
 	return type::sq(sq1) && type::sq(sq2) && type::pc(pc)
-		&& ((type::pc(vc) && vc != king) || vc == no_piece)
+		&& ((type::pc(vc) && vc != KING) || vc == NO_PIECE)
 		&& type::cl(cl) && type::fl(fl);
 }
 
@@ -110,18 +113,18 @@ move::item::item(move mv) :
 
 piece move::item::promo_pc() const
 {
-	verify(fl >= promo_knight && fl <= promo_queen);
+    verify(fl >= PROMO_KNIGHT && fl <= PROMO_QUEEN);
 	return piece(fl - 3);
 }
 
 bool move::item::promo() const
 {
-	return fl >= promo_knight;
+    return fl >= PROMO_KNIGHT;
 }
 
 bool move::item::castling() const
 {
-	return fl == castle_east || fl == castle_west;
+    return fl == CASTLE_EAST || fl == CASTLE_WEST;
 }
 
 piece move::promo_pc() const
@@ -131,28 +134,23 @@ piece move::promo_pc() const
 
 bool move::castle() const
 {
-	flag fl{ this->fl() };
-	return fl == castle_east || fl == castle_west;
+    flag fl{ this->fl() };
+    return fl == CASTLE_EAST || fl == CASTLE_WEST;
 }
 
 bool move::capture() const
 {
-	return vc() != no_piece;
+	return vc() != NO_PIECE;
 }
 
 bool move::promo() const
 {
-	return fl() >= promo_knight;
+    return fl() >= PROMO_KNIGHT;
 }
 
 bool move::quiet() const
 {
-	return vc() == no_piece && !promo();
-}
-
-bool move::push_to_7th() const
-{
-	return pc() == pawn && type::rel_rk_of(type::rk_of(sq2()), cl()) == rank_7;
+	return vc() == NO_PIECE && !promo();
 }
 
 std::string move::algebraic() const
@@ -161,24 +159,25 @@ std::string move::algebraic() const
 	// castling moves and promotions require special care
 
 	if (!(*this)) return "0000";
-	item mv{ *this };
+	item m{ *this };
 
-	if (!uci::chess960 && mv.castling())
-		mv.sq2 = king_target[mv.cl][mv.fl];
+	if (!uci::chess960 && m.castling())
+		m.sq2 = king_target[m.cl][m.fl];
 
-	std::string coordinate{ type::sq_of(mv.sq1) + type::sq_of(mv.sq2) };
-	if (mv.promo())
-		coordinate += "nbrq"[mv.fl - promo_knight];
+	std::string coordinate{ type::sq_of(m.sq1) + type::sq_of(m.sq2) };
+	if (m.promo())
+		coordinate += "nbrq"[m.fl - PROMO_KNIGHT];
 
 	return coordinate;
 }
 
-depth move_var::get_seldt()
+void killer_list::update(move& quiet_mv)
 {
-	// retrieving the selective depth, i.e. the highest reached depth
+	// updating killer-moves if a quiet move fails high
 
-	depth new_dt{ seldt };
-	for ( ; mv[new_dt]; ++new_dt);
-	seldt = std::max(new_dt, std::max(dt, 1));
-	return seldt;
+	if (quiet_mv != mv[0])
+	{
+		mv[1] = mv[0];
+		mv[0] = quiet_mv;
+	}
 }

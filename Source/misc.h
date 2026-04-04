@@ -1,6 +1,5 @@
 /*
-  Monolith 2 Copyright (C) 2017-2020 Jonas Mayr
-  This file is part of Monolith.
+  Monolith Copyright (C) 2017-2026 Jonas Mayr
 
   Monolith is free software: you can redistribute it and/or modify
   it under the terms of the GNU General Public License as published by
@@ -21,31 +20,29 @@
 
 #include <streambuf>
 #include <fstream>
+#include <random>
+#include <string>
 
 #include "types.h"
-#include "main.h"
 
 #if defined(_WIN32)
 #define WIN32_LEAN_AND_MEAN
-#ifndef NOMINMAX
 #define NOMINMAX
-#endif
 #include <windows.h>
-#include <direct.h>
-#define fd_error INVALID_HANDLE_VALUE
+#define FILE_ERROR INVALID_HANDLE_VALUE
 
-using mem_map = HANDLE;
-using FD = HANDLE;
+using memorymap = HANDLE;
+using datafile = HANDLE;
 
 #else
-#include <unistd.h> 
 #include <sys/mman.h>
 #include <sys/stat.h>
 #include <fcntl.h>
-#define fd_error -1
+#include <unistd.h>
+#define FILE_ERROR -1
 
-using mem_map = std::size_t;
-using FD = int;
+using memorymap = std::size_t;
+using datafile = int;
 #endif
 
 // providing filesystem functionality
@@ -54,25 +51,24 @@ namespace filesystem
 {
 	// keeping track of the binary file location
 
-	extern std::string path;
-	void init_path();
+	inline std::string path{};
+	void init_path(std::string argv);
+
+	enum desired_access { READ, WRITE };
+
+	uint64 size_file(datafile df);
+	datafile open_file(std::string name, desired_access access);
+	void close_file(datafile df);
 }
 
 // providing memory functionality
 
 namespace memory
 {
-	// a collection of OS-dependent memory functions to use the Syzygy endgame tablebases
-	// all credits go to Ronald de Man:
-	// https://github.com/syzygy1/tb
-	// https://github.com/syzygy1/Cfish
+	// memory-mapping functions
 
-	uint64 size_tb(FD fd);
-	FD open_tb(std::string name);
-	void close_tb(FD fd);
-
-	void*  map(FD fd, mem_map& map);
-	void unmap(void* data, mem_map& map);
+	void*  map(datafile df, memorymap& map);
+	void unmap(void* data, memorymap& map);
 
 	// pre-loading data from memory into cache
 
@@ -84,10 +80,8 @@ namespace memory
 struct syncbuf : public std::streambuf
 {
 	// overriding the standard stream-buffer
-	// idea from the Stockfish-team:
-	// https://github.com/official-stockfish/Stockfish
 
-	std::streambuf* logbuf{}, * stdbuf{};
+	std::streambuf *logbuf{}, *stdbuf{};
 
 	syncbuf(std::streambuf* sb1, std::streambuf* sb2) : logbuf{ sb1 }, stdbuf{ sb2 } {}
 
@@ -110,4 +104,44 @@ private:
 public:
 	void start();
 	void stop();
+};
+
+// pseudo random number generation
+
+class rand_64xor
+{
+	// pseudo random number generation through xor-shift
+	// used to generate "magic" index numbers
+
+private:
+	// using pre-calculated seeds to speed up magic number generation
+
+	static constexpr std::array<bit64, 16> magic_seed
+	{ {
+		0x5dd4569, 0x33180c2, 0x1ab24ce, 0x4fc6fd8,
+		0x559921d, 0x0db6850, 0x0c6e669, 0x4e47fcf,
+		0x252b1fa, 0x4319b7f, 0x201818c, 0x3dd84f7,
+		0x5ede0dc, 0x1321cc8, 0x2b9b062, 0x290b5b5
+	} };
+
+	bit64 seed{};
+	bit64 rand64();
+
+public:
+	void new_seed(square sq);
+	bit64 sparse64();
+};
+
+class rand_64
+{
+	// pseudo random number generation with standard library functions
+	// used to generate Zobrist hash keys
+
+private:
+	std::mt19937_64 rand_gen;
+	std::uniform_int_distribution<bit64> uniform{};
+
+public:
+	rand_64() : rand_gen(5489U) {}
+	bit64 rand64();
 };

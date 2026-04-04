@@ -1,6 +1,5 @@
 /*
-  Monolith 2 Copyright (C) 2017-2020 Jonas Mayr
-  This file is part of Monolith.
+  Monolith Copyright (C) 2017-2026 Jonas Mayr
 
   Monolith is free software: you can redistribute it and/or modify
   it under the terms of the GNU General Public License as published by
@@ -19,7 +18,11 @@
 
 #pragma once
 
-#include "main.h"
+#include <chrono>
+#include <array>
+#include <iostream>
+#include <limits>
+#include <string>
 
 // basic type definitions
 
@@ -52,101 +55,100 @@ class move;
 
 enum square : int
 {
-	h1, g1, f1, e1, d1, c1, b1, a1,
-	h2, g2, f2, e2, d2, c2, b2, a2,
-	h3, g3, f3, e3, d3, c3, b3, a3,
-	h4, g4, f4, e4, d4, c4, b4, a4,
-	h5, g5, f5, e5, d5, c5, b5, a5,
-	h6, g6, f6, e6, d6, c6, b6, a6,
-	h7, g7, f7, e7, d7, c7, b7, a7,
-	h8, g8, f8, e8, d8, c8, b8, a8,
-	prohibited
+	H1, G1, F1, E1, D1, C1, B1, A1,
+	H2, G2, F2, E2, D2, C2, B2, A2,
+	H3, G3, F3, E3, D3, C3, B3, A3,
+	H4, G4, F4, E4, D4, C4, B4, A4,
+	H5, G5, F5, E5, D5, C5, B5, A5,
+	H6, G6, F6, E6, D6, C6, B6, A6,
+	H7, G7, F7, E7, D7, C7, B7, A7,
+	H8, G8, F8, E8, D8, C8, B8, A8,
+	NO_SQUARE
 };
 
-enum file : int { file_h, file_g, file_f, file_e, file_d, file_c, file_b, file_a };
-enum rank : int { rank_1, rank_2, rank_3, rank_4, rank_5, rank_6, rank_7, rank_8 };
+enum file : int { FILE_H, FILE_G, FILE_F, FILE_E, FILE_D, FILE_C, FILE_B, FILE_A };
+enum rank : int { RANK_1, RANK_2, RANK_3, RANK_4, RANK_5, RANK_6, RANK_7, RANK_8 };
 
 enum piece : int16
 {
-	pawn,
-	knight,
-	bishop,
-	rook,
-	queen,
-	king,
-	no_piece
+	PAWN,
+	KNIGHT,
+	BISHOP,
+	ROOK,
+	QUEEN,
+	KING,
+	NO_PIECE
 };
 
-enum color     : int { white, black, both };
-enum gamestage : int { mg, eg };
+enum color : int { WHITE, BLACK, BOTH };
 
 enum flag : int
 {
-	castle_east,
-	castle_west,
-	enpassant,
-	no_flag,
-	promo_knight,
-	promo_bishop,
-	promo_rook,
-	promo_queen
+	CASTLE_EAST,
+	CASTLE_WEST,
+	ENPASSANT,
+	NO_FLAG,
+	PROMO_KNIGHT,
+	PROMO_BISHOP,
+	PROMO_ROOK,
+	PROMO_QUEEN
 };
 
 enum score : int
 {
-	none         = -32100,
-	blessed_loss = -2,
-	draw         =  0,
-	cursed_win   =  2,
-	mate         =  32000,
-	longest_mate =  31780,
-	tb_win       =  16000,
-	tb_loss      = -16000
+	NONE         = -32100,
+	BLESSED_LOSS = -2,
+	DRAW         =  0,
+	CURSED_WIN   =  2,
+	MATE         =  32000,
+	LONGEST_MATE =  31780,
+	TB_WIN       =  16000,
+	TB_LOSS      = -16000
 };
 
 // using scoped enumerators wherever possible
 
 enum class direction : int
 {
-	south = -8,
-	north =  8,
-	east  = -1,
-	west  =  1
+	SOUTH = -8,
+	NORTH =  8,
+	EAST  = -1,
+	WEST  =  1
 };
 
-enum class bound  : int { none, exact, upper, lower };
-enum class mode   : int { legal, pseudolegal };
+enum class bound  : int { NONE, EXACT, UPPER, LOWER };
+enum class mode   : int { LEGAL, PSEUDOLEGAL };
 
 enum class genstage : int
 {
-	hash,
-	winning,
-	killer,
-	quiet,
-	loosing,
-	deferred,
-	capture,
-	tactical,
-	check,
-	evasion
+	HASH,
+	WINNING,
+	KILLER,
+	QUIET,
+	LOOSING,
+	TACTICAL,
+	CHECK,
+	EVASION
 };
 
 enum class stage : int
 {
-	quiet,
-	quiet_promo_all,
-	quiet_promo_queen,
-	capture,
-	capture_promo_all,
-	capture_promo_queen,
-	enpassant,
-	promo_all,
-	promo_queen
+	QUIET,
+	QUIET_PROMO_ALL,
+	QUIET_PROMO_QUEEN,
+	CAPTURE,
+	CAPTURE_PROMO_ALL,
+	CAPTURE_PROMO_QUEEN,
+	ENPASSANT,
+	PROMO_ALL,
+	PROMO_QUEEN
 };
 
-enum class exception : int { stop_search };
+enum class exception : int { STOP_SEARCH };
 
 // operator overloads
+
+using std::chrono::milliseconds;
 
 constexpr score  operator + (score  sc1, score sc2) { return score(int(sc1) + int(sc2)); }
 constexpr score  operator - (score  sc1, score sc2) { return score(int(sc1) - int(sc2)); }
@@ -174,45 +176,46 @@ inline std::istream& operator >>(std::istream& is, milliseconds& time) { int t{}
 namespace lim
 {
 	constexpr int64 nodes{ std::numeric_limits<int64>::max() };
-	constexpr int threads{ 256 };
+	constexpr int threads{ 512 };
 	constexpr int syzygy_pieces{ 7 };
 
 	constexpr milliseconds movetime{ milliseconds::max() };
 	constexpr milliseconds overhead{ 5000 };
 
-	constexpr std::size_t hash{ 65536 };
+	constexpr std::size_t hash{ 262144 };
 	constexpr std::size_t moves{ 218 };
 	constexpr std::size_t multipv{ moves };
 
 	constexpr depth dt{ 110 };
 	constexpr depth dtz{ 1048 };
 
-	static_assert(score::longest_mate + 2 * lim::dt == score::mate);
+    static_assert(LONGEST_MATE + 2 * lim::dt == MATE);
 }
+
 
 namespace type
 {
 	// asserting type correctness for all unscoped enumerator types
 
-	constexpr bool sq(square sq) { return sq >= h1     && sq <= a8;      }
-	constexpr bool fl(file fl)   { return fl >= file_h && fl <= file_a;  }
-	constexpr bool rk(rank rk)   { return rk >= rank_1 && rk <= rank_8;  }
-	constexpr bool cl(color cl)  { return cl == white  || cl == black;   }
-	constexpr bool pc(piece pc)  { return pc >= pawn   && pc <= king;    }
-	constexpr bool fl(flag fl)   { return fl >= 0      && fl <= 0b111;   }
-	constexpr bool sc(score sc)  { return sc >= -mate  && sc <= mate;    }
+    constexpr bool sq(square sq) { return sq >= H1     && sq <= A8;      }
+    constexpr bool fl(file fl)   { return fl >= FILE_H && fl <= FILE_A;  }
+    constexpr bool rk(rank rk)   { return rk >= RANK_1 && rk <= RANK_8;  }
+    constexpr bool cl(color cl)  { return cl == WHITE  || cl == BLACK;   }
+    constexpr bool pc(piece pc)  { return pc >= PAWN   && pc <= KING;    }
+    constexpr bool fl(flag fl)   { return fl >= 0      && fl <= 0b111;   }
+    constexpr bool sc(score sc)  { return sc >= -MATE  && sc <= MATE;    }
 	constexpr bool dt(depth dt)  { return dt >= 0      && dt <= lim::dt; }
 
 	// basic global type functions
 
 	file fl_of(square sq);
 	rank rk_of(square sq);
-	rank rel_rk_of(rank rk, color cl);
+	rank rk_of(rank rk, color cl);
 
 	square sq_of(rank rk, file fl);
 	square sq_of(std::string sq);
 	std::string sq_of(square sq);
 
 	square sq_flip(square sq);
-	int sq_distance(square sq1, square sq2);
+	int    sq_distance(square sq1, square sq2);
 }

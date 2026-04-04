@@ -1,6 +1,5 @@
 /*
-  Monolith 2 Copyright (C) 2017-2020 Jonas Mayr
-  This file is part of Monolith.
+  Monolith Copyright (C) 2017-2026 Jonas Mayr
 
   Monolith is free software: you can redistribute it and/or modify
   it under the terms of the GNU General Public License as published by
@@ -17,6 +16,11 @@
 */
 
 
+#include <chrono>
+#include <algorithm>
+
+#include "main.h"
+#include "types.h"
 #include "uci.h"
 #include "time.h"
 
@@ -47,18 +51,20 @@ timemanage::move_time timemanage::get_movetime(color cl)
 	if (restricted)
 		return { movetime.infinite() ? movetime.target : movetime.target - uci::overhead, milliseconds(0) };
 
-	int  moves{ movestogo ? movestogo / 2 + 1 : 25 };
-	auto max_time{ time[cl] - uci::overhead };
-	auto target_time{ time[cl] / moves + incr[cl] - uci::overhead };
+	int moves{ movestogo ? movestogo / 2 + 1 : target_moves };
+	moves += moves / (uci::mv_cnt / 2 + 1);
+	auto target{ time[cl] / moves + incr[cl] - uci::overhead };
 	if (uci::ponder)
-		target_time = target_time * 4 / 3;
-	auto tolerable_time{ target_time + (max_time - target_time) / 5 };
-	tolerable_time = std::min(tolerable_time, max_time);
+		target = target * 4 / 3;
+
+	auto max{ time[cl] - uci::overhead };
+	auto tolerable{ target + (max - target) / tolerable_div };
+	tolerable = std::min(tolerable, max);
 
 	// applying a safety margin and finalizing the search-time calculations
 
-	movetime.tolerable = tolerable_time - std::max(std::min(target_time / 20, milliseconds(200)),  milliseconds(2));
-	movetime.target    = std::max(std::min(target_time, movetime.tolerable), milliseconds(1));
+	movetime.tolerable = tolerable - std::clamp(target / 20, milliseconds(2), milliseconds(200));
+	movetime.target    = std::clamp(target, milliseconds(1), movetime.tolerable);
 	return movetime;
 }
 
@@ -93,10 +99,9 @@ void chronometer::extend(score drop)
 	if (movetime.infinite() || movetime.fixed())
 		return;
 
-	verify(drop <= -25);
-	milliseconds target{ movetime.target * 6 / 5 };
+	milliseconds target{ movetime.target * extend_time / 8 };
 	if (drop <= -50)
-		target = target * 6 / 5;
+		target = target * extend_time / 8;
 
 	movetime.target = std::min(target, movetime.tolerable);
 }

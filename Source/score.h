@@ -1,6 +1,5 @@
 /*
-  Monolith 2 Copyright (C) 2017-2020 Jonas Mayr
-  This file is part of Monolith.
+  Monolith Copyright (C) 2017-2026 Jonas Mayr
 
   Monolith is free software: you can redistribute it and/or modify
   it under the terms of the GNU General Public License as published by
@@ -19,16 +18,27 @@
 
 #pragma once
 
-#include "main.h"
+#include <tuple>
 
-// tuning evaluation parameters with the Texel tuning method
+#include "types.h"
 
-namespace texel
+// a collection of useful functions to keep track of the search score
+
+namespace sc
 {
-#if defined(TUNE)
-	void tune(std::string &epd_file, int thread_cnt);
+	bool mate(score sc);
+	bool draw(score sc);
+	bool good_enough_mate(score sc);
+	bool mate_distance_pruning(score& alpha, score& beta, depth stack_dt);
+	bool tt_cutoff(bound bd, score sc, score alpha, score beta);
+	std::tuple<score, bound> make_bounded(score best_sc, score old_alpha, score beta);
 
-#else
-	inline void tune(std::string&, int) {}
-#endif
+	// search scores for endgame table-bases have different ranges
+
+	namespace tb
+	{
+		bool mate(score sc);
+		bool draw(score sc);
+		bool refinable(int64& root_weight, score sc);
+	}
 }

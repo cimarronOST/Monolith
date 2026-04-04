@@ -1,6 +1,5 @@
 /*
-  Monolith 2 Copyright (C) 2017-2020 Jonas Mayr
-  This file is part of Monolith.
+  Monolith Copyright (C) 2017-2026 Jonas Mayr
 
   Monolith is free software: you can redistribute it and/or modify
   it under the terms of the GNU General Public License as published by
@@ -19,19 +18,15 @@
 
 #pragma once
 
+#include <vector>
+#include <initializer_list>
+
 #include "move.h"
 #include "attack.h"
 #include "bit.h"
 #include "board.h"
 #include "types.h"
 #include "main.h"
-
-// disable Intel compiler warnings
-// explicitly instantiating template functions more than once
-
-#if defined(__INTEL_COMPILER)
-#pragma warning(disable : 803)
-#endif
 
 // generating moves
 // generation is staged and can be legal or pseudo-legal
@@ -47,12 +42,12 @@ public:
 
 	gen(const board& fixed_pos) : pos{ fixed_pos }
 	{
-		if constexpr (md == mode::legal)
+		if constexpr (md == mode::LEGAL)
 		{
 			pin.find(pos, pos.cl, pos.cl);
 			evasions = attack::evasions(pos);
 		}
-		if constexpr (md == mode::pseudolegal)
+		if constexpr (md == mode::PSEUDOLEGAL)
 			verify(evasions == bit::max);
 	}
 
@@ -89,12 +84,12 @@ public:
 	// restoring previously generated moves
 
 	int restore_loosing();
-	int restore_deferred(const move_list& deferred, int deferred_cnt);
 
 private:
 	// actual move generating functions
 
-	template<stage st> void  pawns();
+	template<stage st> bit64 pawn_mask();
+	template<stage st> void pawns();
 	template<stage st> void pieces(std::initializer_list<piece> pc);
 	void castle();
 };

@@ -1,6 +1,5 @@
 /*
-  Monolith 2 Copyright (C) 2017-2020 Jonas Mayr
-  This file is part of Monolith.
+  Monolith Copyright (C) 2017-2026 Jonas Mayr
 
   Monolith is free software: you can redistribute it and/or modify
   it under the terms of the GNU General Public License as published by
@@ -19,44 +18,13 @@
 
 #pragma once
 
+#include <array>
+
+#include "history.h"
 #include "move.h"
 #include "movegen.h"
 #include "board.h"
 #include "types.h"
-#include "main.h"
-
-// handling the history tables
-
-class history
-{
-private:
-	// updating the history tables
-
-	void update_entry(int& entry, int weight);
-	void set_main(move mv, int weight);
-	void set_counter(move mv, move mv_prev, int weight);
-	void set_continuation(move mv, move mv_prev, int weight);
-
-public:
-	static constexpr int max{ 0x2aaaaaaa };
-
-	std::array<std::array<std::array<int, 64>, 6>, 2> main{};
-	std::array<std::array<std::array<std::array<int, 64>, 6>, 64>, 6> counter{};
-	std::array<std::array<std::array<std::array<int, 64>, 6>, 64>, 6> continuation{};
-
-	void update(move mv, move mv_prev1, move mv_prev2, const move_list& quiet_mv, int quiet_cnt, depth dt);
-	void clear();
-
-	// probing the history tables
-
-	struct sc
-	{
-		int main;
-		int counter;
-		int continuation;
-		void get(const history& hist, move mv, move mv_prev1, move mv_prev2);
-	};
-};
 
 // handling the sorting of root node moves
 
@@ -64,18 +32,18 @@ class rootsort
 {
 private:
 	board pos;
-	const gen<mode::legal>& list;
+	const gen<mode::LEGAL>& list;
 
 public:
-	rootsort(const gen<mode::legal>& mvlist) : pos{ mvlist.pos }, list{ mvlist } {}
+	rootsort(const gen<mode::LEGAL>& mv_list) : pos{ mv_list.pos }, list{ mv_list } {}
 
 	// storing all relevant information of each move
 
 	struct root_node
 	{
-		move mv{};
 		int64 nodes{};
 		int64 weight{};
+		move mv{};
 		bool check{};
 		bool skip{};
 	};
@@ -84,8 +52,8 @@ public:
 	// weighting the moves
 
 	void sort_moves();
-	void statical();
-	void dynamical(move pv_mv);
+	void sort_static();
+	void sort_dynamic(move pv_mv);
 
 	// handling multi-PV
 
@@ -107,17 +75,16 @@ public:
 
 	// parameters only used in the main alpha-beta move weighting
 
-	struct quiet_parameters
+	struct node_parameter
 	{
 		move hash;
-		move prev1;
-		move prev2;
 		move counter;
+		const sstack* stack;
 		const killer_list* killer;
 		const history* hist;
-	} quiets{};
+	} node{};
 
-	score see_margin{ score::none };
+	score see_margin{ score::NONE };
 
 private:
 	// weighting captures & promotions
@@ -130,15 +97,14 @@ private:
 public:
 	// main search
 
-	sort(gen<md>& mvlist, move mv_tt, move mv_prev1, move mv_prev2, move counter, const killer_list& killer, const history& hist_tables)
-		: list{ mvlist }, quiets{ mv_tt, mv_prev1, mv_prev2, counter, &killer, &hist_tables } {}
+	sort(gen<md>& mvlist, move mv_tt, const sstack* stack, move counter, const history& hist_tables)
+		: list{ mvlist }, node{ mv_tt, counter, stack, &stack->killer, &hist_tables } {}
 
 	void hash();
 	void tactical_see();
 	void killer();
 	void quiet();
 	void loosing();
-	void deferred();
 
 	// quiescence search
 

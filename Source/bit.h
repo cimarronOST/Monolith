@@ -1,6 +1,5 @@
 /*
-  Monolith 2 Copyright (C) 2017-2020 Jonas Mayr
-  This file is part of Monolith.
+  Monolith Copyright (C) 2017-2026 Jonas Mayr
 
   Monolith is free software: you can redistribute it and/or modify
   it under the terms of the GNU General Public License as published by
@@ -20,9 +19,9 @@
 #pragma once
 
 #include <limits>
+#include <array>
 
 #include "types.h"
-#include "main.h"
 
 // manipulating bitboards
 
@@ -30,17 +29,18 @@ namespace bit
 {
 	// bitmasks that have to be initialized
 
-	extern std::array<bit64, 8> fl_adjacent;
-	extern std::array<std::array<bit64,  8>,  2> ep_adjacent;
-	extern std::array<std::array<bit64, 64>,  2> in_front;
-	extern std::array<std::array<bit64, 64>,  2> fl_in_front;
-	extern std::array<std::array<bit64, 64>,  2> front_span;
-	extern std::array<std::array<bit64, 64>, 64> between;
-	extern std::array<std::array<bit64, 64>, 64> ray;
-	extern std::array<std::array<bit64, 64>,  6> pc_attack;
-	extern std::array<std::array<bit64, 64>,  2> pawn_attack;
-	extern std::array<std::array<bit64, 64>,  2> king_zone;
-	extern std::array<std::array<bit64, 64>,  2> connected;
+	inline std::array<bit64, 8> fl_adjacent{};
+	inline std::array<std::array<bit64,  8>,  2> ep_adjacent{};
+	inline std::array<std::array<bit64, 64>,  2> in_front{};
+	inline std::array<std::array<bit64, 64>,  2> fl_in_front{};
+	inline std::array<std::array<bit64, 64>,  2> fork_in_front{};
+	inline std::array<std::array<bit64, 64>,  2> front_span{};
+	inline std::array<std::array<bit64, 64>, 64> between{};
+	inline std::array<std::array<bit64, 64>, 64> ray{};
+	inline std::array<std::array<bit64, 64>,  6> pc_attack{};
+	inline std::array<std::array<bit64, 64>,  2> pawn_attack{};
+	inline std::array<std::array<bit64, 64>,  2> king_zone{};
+	inline std::array<std::array<bit64, 64>,  2> connected{};
 
 	void init_masks();
 
@@ -48,18 +48,15 @@ namespace bit
 
 	bit64 shift(bit64 bb, int shift);
 	bit64 color(bit64 bb);
-	bit64 set(square sq);
-
+	bit64  set(square sq);
 	square scan(bit64 bb);
-	int popcnt(bit64 bb);
+
+	// managing little & big endianness
 
 	template<typename uint> uint byteswap(uint bb);
-
-	// managing little & big endianess
-
-	template<typename uint> uint le(uint bb);
-	template<typename uint> uint be(uint bb);
-	template<typename uint> uint read_le(void* bb);
+	template<typename uint> uint l_endian(uint bb);
+	template<typename uint> uint b_endian(uint bb);
+	template<typename uint> uint read_l_endian(void* bb);
 
 	// pre-calculated bitmasks
 
@@ -87,18 +84,31 @@ namespace bit
 		0xffULL << 56
 	} };
 
-	constexpr bit64 sq_white{ 0xaa55aa55aa55aa55ULL };
-	constexpr bit64 sq_black{ 0x55aa55aa55aa55aaULL };
+	constexpr bit64 sq_white { 0xaa55aa55aa55aa55ULL };
+	constexpr bit64 sq_black { 0x55aa55aa55aa55aaULL };
 	constexpr bit64 half_east{ 0x0f0f0f0f0f0f0f0fULL };
 	constexpr bit64 half_west{ 0xf0f0f0f0f0f0f0f0ULL };
-	constexpr bit64 rank_promo{ rank[rank_1] | rank[rank_8] };
+	constexpr bit64 center_files{ 0x3c3c3c3c3c3c3c3cULL };
+	constexpr bit64 rank_promo{ rank[RANK_1] | rank[RANK_8] };
 	constexpr bit64 max{ std::numeric_limits<bit64>::max() };
 
 	constexpr std::array<bit64, 2> outpost_zone{ { 0x3c3c3c000000ULL, 0x3c3c3c0000ULL } };
 	constexpr std::array<bit64, 2> board_half{ { 0xffffffffULL, 0xffffffff00000000ULL } };
-	constexpr std::array<bit64, 2> no_west_boarder{ { ~bit::file[file_a], ~bit::file[file_h] } };
-	constexpr std::array<bit64, 2> no_east_boarder{ { ~bit::file[file_h], ~bit::file[file_a] } };
-	constexpr std::array<bit64, 2> rank_push2x{ { rank[rank_3], rank[rank_6] } };
+	constexpr std::array<bit64, 2> no_west_boarder{ { ~bit::file[FILE_A], ~bit::file[FILE_H] } };
+	constexpr std::array<bit64, 2> no_east_boarder{ { ~bit::file[FILE_H], ~bit::file[FILE_A] } };
+	constexpr std::array<bit64, 2> rank_push2x{ { rank[RANK_3], rank[RANK_6] } };
+
+	constexpr std::array<bit64, 8> flank
+	{ {
+            half_east ^ file[FILE_E],
+			half_east,
+			half_east,
+			center_files,
+			center_files,
+			half_west,
+			half_west,
+            half_west ^ file[FILE_D]
+	} };
 }
 
 // defining piece movements and their restrictions for all non-sliding pieces

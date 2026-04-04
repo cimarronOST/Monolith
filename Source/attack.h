@@ -1,6 +1,5 @@
 /*
-  Monolith 2 Copyright (C) 2017-2020 Jonas Mayr
-  This file is part of Monolith.
+  Monolith Copyright (C) 2017-2026 Jonas Mayr
 
   Monolith is free software: you can redistribute it and/or modify
   it under the terms of the GNU General Public License as published by
@@ -19,15 +18,17 @@
 
 #pragma once
 
-#include "board.h"
-#include "types.h"
-#include "main.h"
+#include <array>
 
-// attacking functions using bitboards
+#include "board.h"
+#include "move.h"
+#include "types.h"
+
+// piece attacking functions using bitboards
 
 namespace attack
 {
-	// pins are pieces that are pinned to the king by a slider
+	// pins are pieces that are pinned to the king by a sliding piece
 	// they have to be computed only for legal move generation
 
 	class pin_mv
@@ -39,25 +40,25 @@ namespace attack
 
 	public:
 		bit64 operator[](square sq) const;
-		void find(const board &pos, color cl_king, color cl_piece);
+		void find(const board &pos, color cl_king, color cl_pc);
 		void add(square sq, bit64 bb);
 	};
 
-	// rough value of all pieces in centipawn units
+	// value of all piece types (plus NO_PIECE) in centipawn units
 
-	constexpr std::array<score, 7> value{ { score(85), score(350), score(350), score(575), score(1100), score(10000), score(0) } };
+	inline std::array<score, 7> value;
 
 	// detecting check & finding evasions
 	// evasions have to be computed only for legal move generation
 
-	bit64 check(const board &pos, color cl, bit64 mask);
+	bit64 safe(const board &pos, color cl, bit64 mask);
 	bit64 evasions(const board &pos);
 
 	// generating attacks
 
 	bit64 by_piece(piece pc, square sq, color cl, const bit64 &occ);
 	template<piece pc>
-	bit64 by_slider(square sq, bit64 occ);
+	bit64 by_slider(square sq, const bit64& occ);
 	bit64 by_pawns(bit64 pawns, color cl);
 	bit64 sq(const board &pos, square sq, const bit64 &occ);
 

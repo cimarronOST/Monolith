@@ -1,6 +1,5 @@
 /*
-  Monolith 2 Copyright (C) 2017-2020 Jonas Mayr
-  This file is part of Monolith.
+  Monolith Copyright (C) 2017-2026 Jonas Mayr
 
   Monolith is free software: you can redistribute it and/or modify
   it under the terms of the GNU General Public License as published by
@@ -17,11 +16,15 @@
 */
 
 
+#pragma once
+
+#include <string>
+#include <chrono>
+
 #include "board.h"
 #include "types.h"
-#include "main.h"
 
-// doing benchmarks to test the engine for correctness and speed
+// enabling benchmarking the engine to test for correctness and speed
 
 namespace bench
 {

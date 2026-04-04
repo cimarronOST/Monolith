@@ -1,6 +1,5 @@
 /*
-  Monolith 2 Copyright (C) 2017-2020 Jonas Mayr
-  This file is part of Monolith.
+  Monolith Copyright (C) 2017-2026 Jonas Mayr
 
   Monolith is free software: you can redistribute it and/or modify
   it under the terms of the GNU General Public License as published by
@@ -19,9 +18,11 @@
 
 #pragma once
 
+#include <array>
+#include <string>
+
 #include "move.h"
 #include "types.h"
-#include "main.h"
 
 // representing the internal chessboard
 
@@ -44,16 +45,23 @@ public:
 	color cl_x{};
 	bit64 ep_rear{};
 	castle_sq castle_right{};
-
-	// adding positional hash-keys & square last moved to
-
-	key64 key{};
-	key64 key_kingpawn{};
 	square last_sq{};
+
+	// adding various positional hash keys
+
+	struct key_pos
+	{
+		key64 pos{};
+		key64 pawn{};
+		key64 minor{};
+		key64 major{};
+		std::array<key64, 2> nonpawn{};
+	} key{};
 
 	// parsing a string in FEN-format
 
 	void parse_fen(const std::string& fen_string);
+	void get_keys();
 	void reset();
 
 	// moving on the board
@@ -64,8 +72,13 @@ public:
 
 private:
 	square castling_rook(color cl, direction dr) const;
+	void pawn_push(move::item& mv);
 	void adjust_rook(flag fl);
-	void new_castle_right(color sd, square sq);
+	void rook_castle_right(color sd, square sq);
+	void king_castle_right();
+	void rearrange_pieces(move::item& mv, bit64& sq1, bit64& sq2);
+	void remove_piece(move::item& mv, bit64& sq2);
+	void promote_pawn(move::item& mv, bit64& sq2);
 
 public:
 	// checking for various special cases

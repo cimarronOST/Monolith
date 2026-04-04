@@ -1,6 +1,5 @@
 /*
-  Monolith 2 Copyright (C) 2017-2020 Jonas Mayr
-  This file is part of Monolith.
+  Monolith Copyright (C) 2017-2026 Jonas Mayr
 
   Monolith is free software: you can redistribute it and/or modify
   it under the terms of the GNU General Public License as published by
@@ -23,14 +22,16 @@
 #include <atomic>
 #include <condition_variable>
 #include <mutex>
+#include <vector>
+#include <array>
+#include <tuple>
 
-#include "movesort.h"
+#include "history.h"
 #include "eval.h"
 #include "move.h"
 #include "time.h"
 #include "board.h"
 #include "types.h"
-#include "main.h"
 
 // managing parallelization of the search
 
@@ -49,27 +50,16 @@ public:
 	// various variables to assure functionality and independence
 
 	int index{};
-	std::thread std_thread{};
+	std::jthread std_thread{};
 	std::vector<sthread*> *pool{};
 	chronometer chrono{};
 	board& pos;
 
 	// every thread has its own search stack
 
-	struct sstack
-	{
-		depth dt{};
-		score sc{ score::none };
-		move  mv{};
-		move  singular_mv{};
-		killer_list killer{};
-		struct null_move { bit64 ep{}; square sq{}; } null_mv{};
-		move_list quiet_mv{};
-		move_list defer_mv{};
-		std::array<int, lim::moves> mv_cnt{};
-		bool pruning{ true };
-	};
-	std::array<sstack, lim::dt + 1> stack{}; 
+	std::array<sstack, lim::dt * 2> stack;
+	static constexpr int stack_offset{ 5 };
+	sstack* stack_front() { return &stack[stack_offset]; }
 
 	// other search parameters
 	
@@ -78,15 +68,17 @@ public:
 	std::array<key64, 256> rep_hash{};
 	bool use_syzygy{};
 
-	// keeping track of the principal variation, node count and tablebase hits
+	// keeping track of the principal variation, node count, table-base hits and selective depth
 
 	std::vector<move_var> pv;
 	int64 cnt_n{};
 	int64 cnt_tbhit{};
+	int   cnt_root_mv{};
+	depth seldt{};
 
 	// using king-pawn hash table to speed up the evaluation
 
-	kingpawn_hash hash{ kingpawn_hash::allocate };
+	kingpawn_hash hash{ kingpawn_hash::ALLOCATE };
 
 private:
 	void idle();
@@ -105,8 +97,6 @@ public:
 	{
 		exit = true;
 		awake();
-		if (std_thread.joinable())
-			std_thread.join();
 	}
 
 	// controlling the search cycles
@@ -114,13 +104,19 @@ public:
 	void start();
 	void start_search();
 	void awake();
+	void init();
+	bool stop();
+	void check_expiration();
+	bool main() const { return index == 0; }
 
-	// collecting node-count and tablebase-hit information & rearranging PVs
+	// retrieving statistics
 
-	bool  main() const { return index == 0; }
 	int64 get_nodes()  const;
 	int64 get_tbhits() const;
-	void  rearrange_pv(int mv_cnt);
+
+	std::tuple<score, bound> probe_syzygy(board& pos, depth dt, depth stack_dt);
+	void extend_time(score drop);
+	void rearrange_pv();
 };
 
 // bundling all the search threads into one interface
@@ -139,24 +135,15 @@ public:
 	static std::condition_variable cv;
 	static std::atomic<int> searching;
 
-	thread_pool(std::size_t size, board &new_pos) : pos{ new_pos }
-	{
-		resize(size);
-	}
-
-	~thread_pool()
-	{
-		stop_search();
-		resize(0);
-	}
+	thread_pool(std::size_t size, board &new_pos) : pos{ new_pos } { resize(size); }
+	~thread_pool() { resize(0); }
 
 	// managing the search threads
 
 	void resize(std::size_t size);
 	void start_all() const;
-	void stop_search();
+	bool join_main();
 	void start_clock(const timemanage::move_time &movetime);
-	void extend_time(score drop);
 	void clear_history();
 	std::tuple<move, move> get_bestmove() const;
 };
