@@ -1,6 +1,5 @@
 /*
-  Monolith 2 Copyright (C) 2017-2020 Jonas Mayr
-  This file is part of Monolith.
+  Monolith Copyright (C) 2017-2026 Jonas Mayr
 
   Monolith is free software: you can redistribute it and/or modify
   it under the terms of the GNU General Public License as published by
@@ -19,9 +18,12 @@
 
 #pragma once
 
+#include <cstdlib>
+#include <memory>
+#include <tuple>
+
 #include "move.h"
 #include "types.h"
-#include "main.h"
 
 // managing the main transposition hash table
 
@@ -32,6 +34,8 @@ private:
 	{
 		key64 key;
 		uint64 data;
+		void update_key(const key64& new_key);
+		void update_age(int new_age);
 	};
 
 	static_assert(sizeof(hash) == 16);
@@ -45,21 +49,24 @@ private:
 	static uint64 size;
 	static uint64 mask;
 
+	void clear_fast(int idx, uint64 chunk);
+
 public:
 	// storing and probing
 
 	struct entry
 	{
 		move  mv{};
-		score sc{ score::none };
-		bound bd{ bound::none };
+		score sc{ score::NONE };
+		bound bd{ bound::NONE };
 		depth dt{};
 
 		bool probe(const key64& key, depth curr_dt);
 	};
 
 	static hash* get_entry(const key64& key);
-	static void store(const key64& key, move mv, score sc, bound bd, depth remaining_dt, depth curr_dt);
+	static hash* new_entry(const key64& key, move& new_mv, bound bd);
+	static void store(const key64& key, move mv, std::tuple<score, bound> bounded_sc, depth remaining_dt, depth curr_dt);
 
 	// manipulating the table
 

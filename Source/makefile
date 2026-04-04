@@ -1,6 +1,5 @@
 #
-# Monolith 2 Copyright (C) 2017-2020 Jonas Mayr
-# This file is part of Monolith.
+# Monolith Copyright (C) 2017-2026 Jonas Mayr
 #
 # Monolith is free software: you can redistribute it and/or modify
 # it under the terms of the GNU General Public License as published by
@@ -20,38 +19,36 @@
 # files
 
 NAME   = Monolith
-SOURCE = attack.cpp bench.cpp bit.cpp board.cpp eval.cpp magic.cpp main.cpp \
-         misc.cpp move.cpp movegen.cpp movepick.cpp movesort.cpp polyglot.cpp \
-         random.cpp search.cpp syzygy.cpp texel.cpp thread.cpp time.cpp \
-         trans.cpp types.cpp uci.cpp zobrist.cpp
-
+SOURCE = attack.cpp bench.cpp bit.cpp board.cpp eval.cpp history.cpp \
+         magic.cpp main.cpp misc.cpp move.cpp movegen.cpp movepick.cpp \
+         movesort.cpp score.cpp search.cpp syzygy.cpp thread.cpp \
+         time.cpp trans.cpp tune.cpp types.cpp uci.cpp zobrist.cpp
+     
 # basic flags
 
-CFLAGS = -std=c++17 -O3
-WFLAGS = -Wall -Wextra -Wpedantic
-LFLAGS = -pthread -s
+CFLAGS  = -std=c++23 -O3 -pthread -Wall -Wextra -Wpedantic
+RFLAGS  = -DNDEBUG
+MFLAGS  =
 
 # targeted architecture
 
 ifeq ($(ARCH),)
-    CFLAGS += -march=native
     ARCH    = native
+    CFLAGS += -march=native
 endif
 
-ifeq ($(ARCH),x64)
+ifeq ($(ARCH),x86-64)
     CFLAGS += -m64
+    MFLAGS += -target x86_64-apple-macos11.0
 endif
 
-ifeq ($(ARCH),x64-popcnt)
-    CFLAGS += -m64 -msse3 -mpopcnt -DPOPCNT
+ifeq ($(ARCH),x86-64-pext)
+    CFLAGS += -m64 -msse3 -mpopcnt -mbmi2 -DPEXT
+    MFLAGS += -target x86_64-apple-macos11.0
 endif
 
-ifeq ($(ARCH),x64-pext)
-    CFLAGS += -m64 -msse3 -mpopcnt -DPOPCNT -mbmi2 -DPEXT
-endif
-
-ifeq ($(ARCH),x86)
-    CFLAGS += -m32
+ifeq ($(ARCH),armv64)
+    MFLAGS += -target arm64-apple-macos11.0
 endif
 
 ifeq ($(ARCH),armv7)
@@ -62,62 +59,58 @@ ifeq ($(ARCH),armv8)
     CFLAGS += -m64 -march=armv8-a
 endif
 
-# targeted operating system
+# determining operating system
 
-OS = $(shell uname -s)
-
-ifneq ($(ARCH),native)
-    NAME := $(NAME)-$(ARCH)
+ifneq ($(OS),Windows_NT) 
+    OS = $(shell uname -s)
 endif
 
 ifeq ($(ARCH),$(filter $(ARCH),armv7 armv8))
     OS = Android
 endif
 
-ifeq ($(OS),Android)
-    CFLAGS += -pie -fPIE -fno-strict-overflow -fno-strict-aliasing -ffunction-sections -fdata-sections -flto
-    LFLAGS += -Wl,-pie -Wl,--gc-sections -static-libstdc++
-endif
+# if no compiler is specified, g++ is used except on MacOS
 
-ifeq ($(OS),Linux)
-    CFLAGS += -flto
-endif
-
-ifneq ($(OS),Android)
-    ifeq ($(OS),Linux)
-        RFLAGS += -static -lrt -Wl,--whole-archive -lpthread -Wl,--no-whole-archive
+ifeq ($(COMP),)
+    ifeq ($(OS),Darwin)
+        COMP = clang++
     else
-        CFLAGS += -static
-        NAME   := $(NAME).exe
+        COMP = g++
     endif
 endif
 
-# compiler specific additions
+# adding flags depending on the operating system
 
-ifeq ($(COMP),)
-    COMP = g++
+ifeq ($(OS),Android)
+    CFLAGS += -pie -fPIE -fno-strict-overflow -fno-strict-aliasing -ffunction-sections -fdata-sections -flto
+    CFLAGS += -Wl,-pie -Wl,--gc-sections -static-libstdc++
 endif
 
-ifeq ($(COMP),icpc)
-    WFLAGS += -pedantic -w3 -diag-disable=remark
+ifeq ($(OS),Linux)
+    CFLAGS += -flto=auto
+    RFLAGS += -static
+endif
+
+ifeq ($(OS),Darwin)
+    CFLAGS += -flto=auto
+    RFLAGS += $(MFLAGS)
+endif
+
+ifeq ($(OS),Windows_NT) 
+    RFLAGS += -static
+    NAME   += $(NAME).exe
 endif
 
 # targets
 
 all:
-	$(COMP) $(CFLAGS) $(WFLAGS) -DNDEBUG $(SOURCE) $(LFLAGS) -o $(NAME)
+	$(COMP) $(CFLAGS) -DNDEBUG $(SOURCE) -o $(NAME)
 
 release:
-	$(COMP) $(CFLAGS) $(WFLAGS) $(RFLAGS) -DNDEBUG $(SOURCE) $(LFLAGS) -o $(NAME)
+	$(COMP) $(CFLAGS) $(RFLAGS) $(SOURCE) -o $(NAME)
 
 debug:
-	$(COMP) $(CFLAGS) $(WFLAGS) $(SOURCE) $(LFLAGS) -o $(NAME)
-
-debug_deep:
-	$(COMP) $(CFLAGS) $(WFLAGS) -DDEBUG_DEEP $(SOURCE) $(LFLAGS) -o $(NAME)
-
-tune:
-	$(COMP) $(CFLAGS) $(WFLAGS) -DNDEBUG -DTUNE $(SOURCE) $(LFLAGS) -o $(NAME)
+	$(COMP) $(CFLAGS) $(SOURCE) -o $(NAME)
 
 help:
 	@echo "make [ARCH=architecture] [COMP=compiler]"

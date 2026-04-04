@@ -1,6 +1,5 @@
 /*
-  Monolith 2 Copyright (C) 2017-2020 Jonas Mayr
-  This file is part of Monolith.
+  Monolith Copyright (C) 2017-2026 Jonas Mayr
 
   Monolith is free software: you can redistribute it and/or modify
   it under the terms of the GNU General Public License as published by
@@ -18,6 +17,9 @@
 
 
 #pragma once
+
+#include <array>
+#include <string>
 
 #include "types.h"
 
@@ -77,7 +79,6 @@ public:
 	bool capture() const;
 	bool promo() const;
 	bool quiet() const;
-	bool push_to_7th() const;
 
 	// converting the move into algebraic notation as specified by the UCI-protocol
 
@@ -85,26 +86,49 @@ public:
 
 	// defining castling squares
 
-	constexpr static castle_sq rook_origin{ {{{h1, a1}}, {{h8, a8}}} };
-	constexpr static castle_sq king_target{ {{{g1, c1}}, {{g8, c8}}} };
-	constexpr static castle_sq rook_target{ {{{f1, d1}}, {{f8, d8}}} };
+	constexpr static castle_sq rook_origin{ {{{H1, A1}}, {{H8, A8}}} };
+	constexpr static castle_sq king_target{ {{{G1, C1}}, {{G8, C8}}} };
+	constexpr static castle_sq rook_target{ {{{F1, D1}}, {{F8, D8}}} };
 };
 
 // defining some moves lists for convenience
 
 using move_list    = std::array<move, lim::moves>;
 using counter_list = std::array<std::array<std::array<move, 64>, 6>, 2>;
-using killer_list  = std::array<move, 2>;
+
+// killer move list
+
+struct killer_list
+{
+	std::array<move, 2> mv;
+	void update(move& quiet_mv);
+};
 
 // managing move variations
 
 struct move_var
 {
 	std::array<move, lim::dt> mv{};
+	key64 pos_key{};
 	int cnt{};
 	depth dt{};
-	depth seldt{};
-	depth get_seldt();
 	score sc{};
-	bool wrong{};
+	bool tb_root{};
+};
+
+// search stack contains mostly various move lists
+
+struct sstack
+{
+	depth dt{};
+	score sc{ score::NONE };
+	move  mv{};
+	std::array<std::array<int, 64>, 6>* cont_mv{};
+	move singular_mv{};
+	killer_list killer{};
+	struct null_move { bit64 ep{}; square sq{}; } null_mv{};
+	move_list quiet_mv{};
+	move_list capture_mv{};
+	bool pruning{ true };
+	int fail_high_cnt{};
 };

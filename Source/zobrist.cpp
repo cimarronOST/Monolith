@@ -1,6 +1,5 @@
 /*
-  Monolith 2 Copyright (C) 2017-2020 Jonas Mayr
-  This file is part of Monolith.
+  Monolith Copyright (C) 2017-2026 Jonas Mayr
 
   Monolith is free software: you can redistribute it and/or modify
   it under the terms of the GNU General Public License as published by
@@ -17,14 +16,16 @@
 */
 
 
-#include "bit.h"
-#include "random.h"
-#include "zobrist.h"
+#include <type_traits>
+#include <bit>
 
-std::array<std::array<std::array<key64, 64>, 6>, 2> zobrist::key_pc{};
-std::array<std::array<key64, 2>, 2> zobrist::key_castle{};
-std::array<key64, 8> zobrist::key_ep{};
-key64 zobrist::key_cl{};
+#include "main.h"
+#include "types.h"
+#include "bit.h"
+#include "misc.h"
+#include "board.h"
+#include "move.h"
+#include "zobrist.h"
 
 void zobrist::init_keys()
 {
@@ -45,39 +46,37 @@ key64 zobrist::pos_key(const board &pos)
 
 	// considering all pieces
 
-	for (color cl : { white, black})
+	for (color cl : { WHITE, BLACK })
 	{
-		bit64 pieces{ pos.side[cl] };
-		while (pieces)
+		for (bit64 pieces{ pos.side[cl] }; pieces; pieces &= pieces - 1)
 		{
 			square sq{ bit::scan(pieces) };
-			verify(pos.piece_on[sq] != no_piece);
+			verify(pos.piece_on[sq] != NO_PIECE);
 			key ^= key_pc[cl][pos.piece_on[sq]][sq];
-			pieces &= pieces - 1;
 		}
 	}
 
 	// considering castling rights
 
-	for (color cl : {white, black})
-		for (flag i : {castle_east, castle_west})
-		{
-			if (pos.castle_right[cl][i] != prohibited)
+	for (color cl : { WHITE, BLACK })
+	{
+		for (flag i : { CASTLE_EAST, CASTLE_WEST })
+			if (pos.castle_right[cl][i] != NO_SQUARE)
 				key ^= key_castle[cl][i];
-		}
+	}
 
 	// considering en-passant square only if a capturing pawn stands ready
 
 	if (pos.ep_rear)
 	{
 		file ep_file{ type::fl_of(bit::scan(pos.ep_rear)) };
-		if (pos.pieces[pawn] & pos.side[pos.cl] & bit::ep_adjacent[pos.cl_x][ep_file])
+		if (pos.pieces[PAWN] & pos.side[pos.cl] & bit::ep_adjacent[pos.cl_x][ep_file])
 			key ^= key_ep[ep_file];
 	}
 
 	// considering side to move
 
-	key ^= pos.cl == black ? key_cl : 0ULL;
+	key ^= pos.cl == BLACK ? key_cl : 0ULL;
 	return key;
 }
 
@@ -86,7 +85,7 @@ key64 zobrist::pos_key(const board& pos, move& new_mv)
 	// generating a new hash key simulating the state as if the move had been made
 	// en-passant and changes to castling rights are not considered
 
-	key64 key{ pos.key };
+	key64 key{ pos.key.pos };
 	move::item mv{ new_mv };
 
 	// considering the moving piece
@@ -96,7 +95,7 @@ key64 zobrist::pos_key(const board& pos, move& new_mv)
 
 	// considering the captured piece
 
-	if (mv.vc != no_piece)
+	if (mv.vc != NO_PIECE)
 		key ^= key_pc[mv.cl ^ 1][mv.vc][mv.sq2];
 
 	return key;
@@ -104,48 +103,90 @@ key64 zobrist::pos_key(const board& pos, move& new_mv)
 
 key64 zobrist::adjust_key(const key64& key, move& mv)
 {
-	// adjusting the key based on a new move
+	// adjusting the hash key based on a singular extension move
 
 	return key ^ key64(mv.raw());
 }
 
-key64 zobrist::kingpawn_key(const board& pos)
+key64 zobrist::pawn_key(const board& pos)
 {
-	// generating a hash key for the current position only considering kings and pawns
+	// generating a hash key for the current position only considering pawns
 
 	key64 key{};
-	for (color cl : {white, black})
+	for (color cl : { WHITE, BLACK })
 	{
-		key ^= key_pc[cl][king][pos.sq_king[cl]];
-		bit64 pawns{ pos.pieces[pawn] & pos.side[cl] };
-		while (pawns)
-		{
-			square sq{ bit::scan(pawns) };
-			key ^= key_pc[cl][pawn][sq];
-			pawns &= pawns - 1;
-		}
-		
+		for (bit64 pawns{ pos.pieces[PAWN] & pos.side[cl] }; pawns; pawns &= pawns - 1)
+			key ^= key_pc[cl][PAWN][bit::scan(pawns)];
+	}
+	return  key;
+}
+
+key64 zobrist::nonpawn_key(const board& pos, color cl)
+{
+	// generating a hash key for the current position considering all pieces except pawns
+
+	key64 key{};
+	for (bit64 pieces{ pos.side[cl] }; pieces; pieces &= pieces - 1)
+	{
+		square sq{ bit::scan(pieces) };
+		verify(pos.piece_on[sq] != NO_PIECE);
+		if (pos.piece_on[sq] != PAWN)
+			key ^= key_pc[cl][pos.piece_on[sq]][sq];
+	}
+	return key;
+}
+
+key64 zobrist::kingpawn_key(const board& pos)
+{
+	// adding the king position to the pawn hash key to index the king-pawn evaluation table
+
+	return pos.key.pawn ^ key_pc[WHITE][KING][pos.sq_king[WHITE]] ^ key_pc[BLACK][KING][pos.sq_king[BLACK]];
+}
+
+key64 zobrist::minor_key(const board& pos)
+{
+	// generating a hash key considering knights, bishops and kings
+
+	key64 key{};
+	for (color cl : { WHITE, BLACK })
+	{
+		for (piece pc : { KNIGHT, BISHOP, KING })
+			for (bit64 minor{ pos.pieces[pc] & pos.side[cl] }; minor; minor &= minor - 1)
+				key ^= key_pc[cl][pc][bit::scan(minor)];
+	}
+	return key;
+}
+
+key64 zobrist::major_key(const board& pos)
+{
+	// generating a hash key considering rooks, queens and kings
+
+	key64 key{};
+	for (color cl : { WHITE, BLACK })
+	{
+		for (piece pc : { ROOK, QUEEN, KING })
+			for (bit64 major{ pos.pieces[pc] & pos.side[cl] }; major; major &= major - 1)
+				key ^= key_pc[cl][pc][bit::scan(major)];
 	}
 	return key;
 }
 
 template key64 zobrist::mat_key<board>(board&, bool);
 template key64 zobrist::mat_key<piece_list>(piece_list&, bool);
-
 template<typename pieces>
 key64 zobrist::mat_key(pieces& p, bool mirror)
 {
-	// generating a material signature key from a piece-list or board position, used to probe Syzygy tablebases
+	// generating a material signature key from a piece-list or board position, used to probe Syzygy table-bases
 
 	key64 key{};
 	int pop{};
-	color cl{ mirror ? black : white };
-	for (color cl_key : {white, black})
+    color cl{ mirror ? BLACK : WHITE };
+    for (color cl_key : { WHITE, BLACK })
 	{
-		for (piece pc : {pawn, knight, bishop, rook, queen, king})
+        for (piece pc : { PAWN, KNIGHT, BISHOP, ROOK, QUEEN, KING })
 		{
 			if constexpr (std::is_same<pieces, board>::value)
-				 pop = bit::popcnt(p.pieces[pc] & p.side[cl]);
+				 pop = std::popcount(p.pieces[pc] & p.side[cl]);
 			else pop = p[cl][pc];
 			for (; pop > 0; --pop)
 				key ^= key_pc[cl_key][pc][pop - 1];
@@ -157,21 +198,16 @@ key64 zobrist::mat_key(pieces& p, bool mirror)
 
 key64 zobrist::mat_key(uint8 piece[], int cnt)
 {
-	// generating a material signature key from a piece list, used to probe tablebases
+	// generating a material signature key from a piece list, used to probe table-bases
 	// the list has to be converted first in order to generate a key
 	// syzygy encoding: 1-6 for white pawn-king, 9-14 for black pawn-king
 
 	piece_list pc_list{};
 	for (int i{}; i < cnt; ++i)
+	{
 		if (piece[i])
 			pc_list[piece[i] >> 3][(piece[i] & 7) - 1] += 1;
+	}
 
 	return mat_key<piece_list>(pc_list, false);
-}
-
-key32 zobrist::mv_key(move mv, key64& pos_key)
-{
-	// generating a move-hash-key, used to hash concurrently searched moves
-
-	return key32(pos_key) ^ (mv.raw() * 1664525U + 1013904223U);
 }

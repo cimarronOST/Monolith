@@ -1,6 +1,5 @@
 /*
-  Monolith 2 Copyright (C) 2017-2020 Jonas Mayr
-  This file is part of Monolith.
+  Monolith Copyright (C) 2017-2026 Jonas Mayr
 
   Monolith is free software: you can redistribute it and/or modify
   it under the terms of the GNU General Public License as published by
@@ -19,19 +18,22 @@
 
 #pragma once
 
+#include <array>
+
+#include "history.h"
 #include "uci.h"
 #include "move.h"
 #include "movesort.h"
 #include "movegen.h"
 #include "types.h"
-#include "main.h"
+#include "board.h"
 
 // orchestrating the generation and sorting of the root node move-list
 
 class rootpick
 {
 private:
-	gen<mode::legal> list;
+	gen<mode::LEGAL> list;
 	rootsort sort;
 	int mv_n{};
 
@@ -39,7 +41,7 @@ public:
 	bool tb_pos{};
 	int  mv_cnt()       const { return list.cnt.mv; };
 	bool single_reply() const { return mv_cnt() == 1; };
-	bool tb_win()       const { return (score)sort.root[0].weight == score::tb_win; };
+	bool tb_win()       const { return (score)sort.root[0].weight == TB_WIN; };
 
 	rootpick(const board& pos) : list{ pos }, sort{ list }
 	{
@@ -48,7 +50,7 @@ public:
 		else
 			list.gen_all();
 
-		sort.statical();
+		sort.sort_static();
 	}
 
 	// adjusting the root move order
@@ -76,9 +78,7 @@ public:
 
 private:
 	sort<md> weight;
-	std::array<genstage, 6> st{};
-	move_list* deferred_mv{};
-	int* deferred_cnt{};
+	std::array<genstage, 5> st{};
 
 	struct move_cnt
 	{
@@ -95,13 +95,11 @@ private:
 public:
 	// alpha-beta search
 
-	movepick(board& pos, move mv_tt, move mv_prev1, move mv_prev2, move counter, killer_list& killer,
-		history& hist, move_list& deferred, int& defer_cnt)
-		: list{ pos }, weight{ list, mv_tt, mv_prev1, mv_prev2, counter, killer, hist },
-		  deferred_mv{ &deferred }, deferred_cnt{ &defer_cnt }
+	movepick(board& pos, move mv_tt, const sstack* stack, move counter, const history& hist)
+		: list{ pos }, weight{ list, mv_tt, stack, counter, hist }
 	{
-		cnt.max_cycles = 5 + (uci::thread_cnt > 1 && uci::use_abdada);
-		st = { { genstage::hash, genstage::winning, genstage::killer, genstage::quiet, genstage::loosing, genstage::deferred } };
+		cnt.max_cycles = 5;
+		st = { { genstage::HASH, genstage::WINNING, genstage::KILLER, genstage::QUIET, genstage::LOOSING } };
 	}
 
 	// quiescence search
@@ -109,20 +107,11 @@ public:
 	movepick(board &pos, bool in_check) : list{ pos }, weight{ list }
 	{
 		cnt.max_cycles = 1 + in_check;
-		st = { { genstage::tactical, genstage::evasion } };
+		st = { { genstage::TACTICAL, genstage::EVASION } };
 	}
 
 public:
-	void revert(board& pos)     { pos = list.pos; hits -= 1; }
-	bool stage_deferred() const { return st[cnt.cycles] == genstage::deferred; }
-	bool can_defer() const
-	{
-		// making sure the movepick-object is not regenerating deferred moves currently
-		// this is checked to make sure that moves are only deferred once
-		// single-threaded, this condition is always false and therefore no moves get deferred
-
-		return uci::thread_cnt > 1 && !stage_deferred();
-	}
+	void revert(board& pos) { pos = list.pos; hits -= 1; }
 
 	// picking the highest weighted move
 	// if there is none left, further generation and weighting is initialized

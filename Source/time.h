@@ -1,6 +1,5 @@
 /*
-  Monolith 2 Copyright (C) 2017-2020 Jonas Mayr
-  This file is part of Monolith.
+  Monolith Copyright (C) 2017-2026 Jonas Mayr
 
   Monolith is free software: you can redistribute it and/or modify
   it under the terms of the GNU General Public License as published by
@@ -19,10 +18,12 @@
 
 #pragma once
 
-#include "types.h"
-#include "main.h"
+#include <chrono>
+#include <array>
 
-// allocating the optimal searchtime for the current move
+#include "types.h"
+
+// allocating the optimal search-time for the current move
 
 class timemanage
 {
@@ -39,6 +40,9 @@ public:
 		bool infinite() const;
 		bool fixed() const;
 	} movetime{ lim::movetime, milliseconds(0) };
+
+	inline static int target_moves;
+	inline static int tolerable_div;
 
 	move_time get_movetime(color cl);
 };
@@ -57,6 +61,7 @@ public:
 	timemanage::move_time movetime{};
 
 	static int hit_threshold;
+	inline static int extend_time;
 	static void reset_hit_threshold();
 
 	void start();

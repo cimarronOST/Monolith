@@ -1,6 +1,5 @@
 /*
-  Monolith 2 Copyright (C) 2017-2020 Jonas Mayr
-  This file is part of Monolith.
+  Monolith Copyright (C) 2017-2026 Jonas Mayr
 
   Monolith is free software: you can redistribute it and/or modify
   it under the terms of the GNU General Public License as published by
@@ -17,118 +16,32 @@
 */
 
 
+#include <algorithm>
+#include <cmath>
+#include <mutex>
+#include <chrono>
+#include <array>
+
+#include "main.h"
+#include "types.h"
+#include "score.h"
+#include "history.h"
 #include "zobrist.h"
 #include "misc.h"
-#include "bit.h"
+#include "attack.h"
 #include "syzygy.h"
 #include "movepick.h"
 #include "movegen.h"
 #include "move.h"
-#include "attack.h"
 #include "trans.h"
 #include "eval.h"
 #include "uci.h"
+#include "thread.h"
+#include "board.h"
 #include "search.h"
 
-int64 search::bench{};
-
-namespace sc
+namespace
 {
-	bool mate(score sc)
-	{
-		// checking whether the score is a mate score
-
-		verify(type::sc(sc));
-		return std::abs(sc) >= score::longest_mate;
-	}
-
-	bool draw(score sc)
-	{
-		// checking whether the score is a draw score
-
-		verify(type::sc(sc));
-		return sc == score::draw;
-	}
-
-	bool good_enough_mate(score sc)
-	{
-		// checking whether the score is a good enough mate as defined by the UCI 'go mate' command
-
-		verify(type::sc(sc));
-		return score::mate - sc <= uci::limit.mate * 2;
-	}
-
-	score alpha_bound(score alpha, depth curr_dt)
-	{
-		// setting a bound for alpha
-
-		return std::max(-score::mate + score(curr_dt), alpha);
-	}
-
-	score beta_bound(score beta, depth curr_dt)
-	{
-		// setting a bound for beta
-
-		return std::min(score::mate - score(curr_dt + 1), beta);
-	}
-}
-
-namespace sc::tb
-{
-	bool mate(score sc)
-	{
-		// checking whether the score is a table-base win or loss
-
-		verify(type::sc(sc));
-		return std::abs(sc) >= score::tb_win - lim::dtz && std::abs(sc) <= score::tb_win + lim::dtz;
-	}
-
-	bool draw(score sc)
-	{
-		// checking whether the score is a table-base draw score
-
-		verify(type::sc(sc));
-		return !mate(sc);
-	}
-
-	std::tuple<score, bound> wdl(int wdl, depth curr_dt)
-	{
-		// converting the table-base WDL score into a more convenient score and bound
-
-		verify (wdl >= -2 && wdl <= 2);
-		switch (wdl)
-		{
-		case  2: return { score::tb_win  - score(curr_dt), bound::lower };
-		case -2: return { score::tb_loss + score(curr_dt), bound::upper };
-		default: return { score::draw    + score(wdl),     bound::exact };
-		}
-	}
-}
-
-namespace null
-{
-	void make_move(board& pos, sthread::sstack* stack)
-	{
-		// doing a "null move"
-
-		stack->null_mv = sthread::sstack::null_move{};
-		pos.null_move(stack->null_mv.ep, stack->null_mv.sq);
-		(stack + 1)->pruning = false;
-	}
-
-	void revert_move(board& pos, sthread::sstack* stack)
-	{
-		// reverting the "null move"
-
-		pos.revert_null_move(stack->null_mv.ep, stack->null_mv.sq);
-		(stack + 1)->pruning = true;
-	}
-}
-
-namespace expiration
-{
-	// monitoring search expiration
-
 	bool abort(const chronometer& chrono, const std::array<move, lim::dt>& pv_mv, const rootpick& pick, depth dt, score sc)
 	{
 		// checking the criteria for early search abortion
@@ -139,202 +52,140 @@ namespace expiration
 
 		// special cases are UCI commands 'go infinite', 'go ponder', 'go mate' & 'go movetime'
 
-		if (uci::infinite)
+		if (uci::infinite.load(std::memory_order::relaxed))
 			return false;
 		if (sc::good_enough_mate(sc))
 			return true;
 		if (chrono.movetime.fixed())
 			return time >= chrono.movetime.target;
 
-		// otherwise making sure that easy moves are searched to a lesser extend
+		// otherwise making sure that the search abortion is not delayed unnecessarily (~15 Elo)
 
-		return  time > chrono.movetime.target /  2
-			|| (time > chrono.movetime.target /  8 && sc > score::longest_mate)
-			|| (time > chrono.movetime.target /  8 && pick.tb_pos)
-			|| (time > chrono.movetime.target / 16 && dt > 8 && !pv_mv[dt - 8])
+		return  time > chrono.movetime.target / 8 * 5
+			|| (time > chrono.movetime.target / 4 && dt > 8 && !pv_mv[dt - 8])
+			|| (time > chrono.movetime.target / 8 && sc > LONGEST_MATE)
+			|| (time > chrono.movetime.target / 8 && pick.tb_pos)
 			|| (time > chrono.movetime.target / 32 && pick.single_reply());
-	}
-
-	bool stop_thread(sthread& thread)
-	{
-		// keeping track of the elapsing time
-		// also increasing the frequency of checking the elapsed time while probing Syzygy tablebases
-
-		if (++thread.chrono.hits < thread.chrono.hit_threshold)
-			return false;
-		thread.chrono.hits = 0;
-		if (uci::infinite)
-			return false;
-		if (thread.get_nodes() >= uci::limit.nodes)
-			return true;
-
-		return thread.chrono.elapsed() >= thread.chrono.movetime.target;
-	}
-
-	void check(sthread& thread)
-	{
-		// checking for immediate search termination
-
-		if (uci::stop || stop_thread(thread))
-		{
-			uci::stop = true;
-			throw exception::stop_search;
-		}
 	}
 }
 
-namespace update
+namespace null
 {
-	void killer_mv(killer_list& killer, move mv)
+	static void make_move(board& pos, sstack* stack, sthread& thread)
 	{
-		// updating killer-moves if a quiet move fails high
+		// doing a "null move"
 
-		if (mv != killer[0])
-		{
-			killer[1] = killer[0];
-			killer[0] = mv;
-		}
+		stack->mv = move{};
+		stack->cont_mv = &thread.hist.corr_cont[0][NO_SQUARE];
+		stack->null_mv = sstack::null_move{};
+		pos.null_move(stack->null_mv.ep, stack->null_mv.sq);
+		(stack + 1)->pruning = false;
 	}
 
-	void main_pv(move mv, move_var& pv, const search::p_variation& pv_next)
+	static void revert_move(board& pos, sstack* stack)
+	{
+		// reverting the "null move"
+
+		pos.revert_null_move(stack->null_mv.ep, stack->null_mv.sq);
+		(stack + 1)->pruning = true;
+	}
+}
+
+namespace p_variation
+{
+	static void update_root(move mv, move_var& pv, const search::node::p_variation* pv_next, key64& key)
 	{
 		// updating the whole PV if a new best root move has been found
 
-		pv.cnt = 1 + pv_next.cnt;
+		pv.pos_key = key;
+		pv.cnt = 1 + pv_next->cnt;
 		pv.mv[0] = mv;
-		for (int i{}; i < pv_next.cnt; ++i)
-			pv.mv[i + 1] = pv_next.mv[i];
+		int pv_max{ std::min(pv_next->cnt, lim::dt - 1) };
+		for (int i{}; i < pv_max; ++i)
+			pv.mv[i + 1] = pv_next->mv[i];
 	}
 
-	void prov_pv(move mv, search::p_variation& pv, const search::p_variation& pv_next)
+	static void update_leaf(move mv, search::node::p_variation* pv, const search::node::p_variation* pv_next)
 	{
 		// updating the provisional PV during the search
 
-		pv.cnt = 1 + pv_next.cnt;
-		pv.mv[0] = mv;
-		for (int i{}; i < pv_next.cnt; ++i)
-			pv.mv[i + 1] = pv_next.mv[i];
+		pv->cnt = 1 + pv_next->cnt;
+		pv->mv[0] = mv;
+		int pv_max{ std::min(pv_next->cnt, lim::dt - 1) };
+		for (int i{}; i < pv_max; ++i)
+			pv->mv[i + 1] = pv_next->mv[i];
 	}
 }
 
-namespace late_move
+void search::init_params()
 {
-	// late move pruning move count, indexed by depth
-
-	constexpr std::array<std::array<depth, 7>, 2> cnt
-	{ {
-		{{ 0, 3, 4,  7, 11, 17, 24 }},
-	    {{ 0, 6, 8, 12, 18, 30, 44 }}
-	} };
-
-	// late move reduction table indexed by move-count and depth
-
-	std::array<std::array<depth, lim::moves>, lim::dt + 1> red{};
-}
-
-void search::init_tables()
-{
-	// initialising the LMR-table at startup
+	// initializing various parameters
 
 	for (int dt{}; dt <= lim::dt; ++dt)
 		for (int mv{}; mv < (int)lim::moves; ++mv)
-			late_move::red[dt][mv] = depth(0.75 + 0.5 * log(dt) * log(mv));
+			late_move_red[dt][mv] = depth(LMR_START / 100.0 + LMR_BASE / 100.0 * std::log(dt) * std::log(mv));
+
+	late_move_cnt =
+	{ {
+		{{ 0, LMP01, LMP02, LMP03, LMP04, LMP05, LMP06 }},
+		{{ 0, LMP11, LMP12, LMP13, LMP14, LMP15, LMP16 }}
+	} };
+
+	attack::value =
+	{ {
+		(score)(int)SEE_V_PAWN, (score)(int)SEE_V_KNIGHT, (score)(int)SEE_V_BISHOP,
+		(score)(int)SEE_V_ROOK, (score)(int)SEE_V_QUEEN,  (score)10000, (score)0
+	} };
+
+	history::w =
+	{
+		HIST_BASE, HIST_GRAVITY, BASE_BONUS, BASE_MALUS, CORR_BASE, CORR_GRAVITY, CORR_BONUS,
+		{ CORR_PAWN,  CORR_MINOR, CORR_MAJOR, CORR_NONPAWN_W, CORR_NONPAWN_B, 
+		  CORR_CONT2, CORR_CONT3, CORR_CONT4, CORR_CONT5 }
+	};
+
+	timemanage::target_moves  = TARGET_MOVES;
+	timemanage::tolerable_div = TOLERABLE_DIV;
+	chronometer::extend_time  = EXTEND_TIME;
 }
 
-namespace abdada
+score search::qsearch(sthread& thread, sstack* stack, node nd, depth dt, score alpha, score beta)
 {
-	// simplified ABDADA
-	// idea for the implementation of this parallelization-algorithm from Tom Kerrigan:
-	// http://www.tckerrigan.com/Chess/Parallel_Search/Simplified_ABDADA
+	// quiescence search at leaf nodes
 
-	constexpr depth dt_defer { 3 };
-	constexpr depth dt_cutoff{ 4 };
-	constexpr uint32 size{ 1U << 15 };
-	constexpr uint32 mask{ size - 1 };
-
-	std::array<std::array<key32, 4>, size> concurrent{};
-
-	bool defer(key32 mv)
-	{
-		// checking whether a move is already being searched by another thread
-		// if true, the move gets deferred
-
-		auto& entry{ concurrent[mv & mask] };
-		return std::any_of(entry.begin(), entry.end(), [&](key32 entry_mv) { return entry_mv == mv; });
-	}
-
-	void add(key32 mv)
-	{
-		// adding a move to the list of currently searched moves
-
-		auto &slots{ concurrent[mv & mask] };
-		for (auto &entry : slots)
-		{
-			if (entry == 0U)
-			{
-				entry = mv;
-				return;
-			}
-			if (entry == mv)
-				return;
-		}
-		slots[0] = mv;
-	}
-
-	void remove(key32 mv)
-	{
-		// removing a move from the list of currently searched moves
-
-		auto& slots{ concurrent[mv & mask] };
-		for (auto &entry : slots)
-		{
-			if (entry == mv)
-				entry = 0U;
-		}
-	}
-}
-
-score search::qsearch(sthread& thread, board& pos, p_variation& pv, bool check, depth stack_dt, depth dt, score alpha, score beta)
-{
-	// quiescence search at the leaf nodes
-
-	verify(-score::mate <= alpha && alpha < beta&& beta <= score::mate);
+	verify(-MATE <= alpha && alpha < beta && beta <= MATE);
 	verify(dt <= 0);
 	thread.cnt_n += 1;
-	pv.cnt = 0;
-	expiration::check(thread);
+	thread.seldt = std::max(thread.seldt, stack->dt);
+	nd.p_var->cnt = 0;
 
-	// detecting draws
+	board& pos{ *nd.pos };
+	thread.check_expiration();
 
-	if (pos.draw(thread.rep_hash, uci::mv_offset + stack_dt))
-		return score::draw;
-
-	// mate distance pruning
-
-	alpha = sc::alpha_bound(alpha, stack_dt);
-	beta  = sc::beta_bound( beta,  stack_dt);
-	if (alpha >= beta)
+	// detecting draws (~10 Elo) & making sure that the bounds don't exceed the score of the shortest possible mate
+	
+	if (pos.draw(thread.rep_hash, uci::mv_offset + stack->dt))
+		return DRAW;
+	
+	if (sc::mate_distance_pruning(alpha, beta, stack->dt))
 		return alpha;
 
-	// transposition table lookup (~27 Elo)
-
+	// looking for a cutoff through the transposition table (~20 Elo)
+	
 	trans::entry tt{};
-	if (dt == 0 && tt.probe(pos.key, stack_dt))
-	{
-		if (tt.bd == bound::exact
-		|| (tt.bd == bound::lower && tt.sc >= beta)
-		|| (tt.bd == bound::upper && tt.sc <= alpha))
-			return tt.sc;
-	}
+	if (dt == 0 && tt.probe(pos.key.pos, stack->dt) && sc::tt_cutoff(tt.bd, tt.sc, alpha, beta))
+		return tt.sc;
 
-	// evaluating the position
+	// evaluating the position with the static evaluation
+	// the evaluation is then corrected with history tables (~75 Elo)
 
 	score stand_pat{ eval::static_eval(pos, thread.hash) };
-	score best_sc  { stand_pat };
+	stand_pat = thread.hist.correct_sc(pos, stack, stand_pat);
+	score best_sc{ stand_pat };
 
-	if (!check && stand_pat > alpha)
+	if (!nd.check && stand_pat > alpha)
 	{
-		// standing pat cutoff (~108 Elo)
+		// standing pat cutoff (~20 Elo)
 
 		if (stand_pat >= beta)
 			return stand_pat;
@@ -343,35 +194,38 @@ score search::qsearch(sthread& thread, board& pos, p_variation& pv, bool check, 
 
 	// generating and sorting moves while looping through them
 
-	p_variation pv_next{};
-	movepick<mode::legal> pick(pos, check);
+	node::p_variation new_pv{};
+	movepick<mode::LEGAL> pick(pos, nd.check);
 	for (move mv{ pick.next() }; mv; mv = pick.next())
 	{
 		verify(dt == 0 || !mv.quiet());
-		verify_deep(pos.pseudolegal(mv));
 
-		if (!check && !mv.quiet())
+		if (!nd.check && !mv.quiet())
 		{
-			// depth limit pruning (~13 Elo)
+			// depth limit pruning to prevent quiescence-search explosions
 
 			if (dt <= -6 && !pos.recapture(mv))
 				continue;
 
-			// delta pruning (~23 Elo)
+			// delta pruning (~10 Elo)
 
-			if (stand_pat + attack::value[mv.vc()] + 100 < alpha && !mv.promo())
+			if (stand_pat + attack::value[mv.vc()] + DELTA_MARGIN < alpha && !mv.promo())
 				continue;
 
-			// SEE pruning (~69 Elo)
+			// SEE pruning (~35 Elo)
 
 			if (!attack::see_above(pos, mv, score(0)))
 				continue;
 		}
 
 		pos.new_move(mv);
-		verify_deep(pos.legal());
+		verify(pos.legal());
 
-		score sc{ -qsearch(thread, pos, pv_next, false, stack_dt + 1, dt - 1, -beta, -alpha) };
+		stack->mv = mv;
+		stack->cont_mv = &thread.hist.corr_cont[mv.pc()][mv.sq2()];
+		node new_nd{ &pos, &new_pv, false, false, false };
+
+		score sc{ -qsearch(thread, stack + 1, new_nd, dt - 1, -beta, -alpha) };
 		pos = pick.list.pos;
 		verify(type::sc(sc));
 
@@ -383,173 +237,142 @@ score search::qsearch(sthread& thread, board& pos, p_variation& pv, bool check, 
 				alpha = sc;
 				if (sc >= beta)
 					return sc;
-				update::prov_pv(mv, pv, pv_next);
+				p_variation::update_leaf(mv, nd.p_var, &new_pv);
 			}
 		}
 	}
 
 	// checkmate detection is possible only in the first ply after the main search
 	// at deeper plies, check detection is skipped
-
-	if (check && pick.hits == 0)
-		return score(stack_dt) - score::mate;
-
+	
+	if (nd.check && pick.hits == 0)
+		return score(stack->dt) - MATE;
+	
 	verify(type::sc(best_sc));
 	return best_sc;
 }
 
 namespace search
 {
-	score alphabeta(sthread& thread, board& pos, sthread::sstack* stack, p_variation& pv, bool in_check, bool cut_node, depth dt, score alpha, score beta)
+	static score alphabeta(sthread& thread, sstack* stack, node nd, depth dt, score alpha, score beta)
 	{
 		// main alpha-beta search
-		// first dropping into quiescence search at leaf nodes
 
-		verify(-score::mate <= alpha && alpha < beta&& beta <= score::mate);
-		verify(!(beta != alpha + 1 && cut_node));
+		verify(-MATE <= alpha && alpha < beta&& beta <= MATE);
+		verify(!(beta != alpha + 1 && nd.cut));
 		verify(dt <= lim::dt);
 
+		// dropping into quiescence search at leaf nodes (~220 Elo)
+
 		if (dt <= 0 || stack->dt >= lim::dt)
-			return qsearch(thread, pos, pv, in_check, stack->dt, 0, alpha, beta);
+			return qsearch(thread, stack, nd, 0, alpha, beta);
 
 		thread.cnt_n += 1;
-		pv.cnt = 0;
-		expiration::check(thread);
+		nd.p_var->cnt = 0;
+		nd.pv = (beta != alpha + 1);
+		board& pos{ *nd.pos };
+		thread.check_expiration();
 
-		// detecting draws
+		// detecting draws (~45 Elo) & making sure that the bounds don't exceed the shortest possible mate-score
 
 		if (pos.draw(thread.rep_hash, uci::mv_offset + stack->dt))
-			return score::draw;
+			return DRAW;
 
-		// mate distance pruning
-
-		alpha = sc::alpha_bound(alpha, stack->dt);
-		beta  = sc::beta_bound( beta,  stack->dt);
-		if (alpha >= beta)
+		if (sc::mate_distance_pruning(alpha, beta, stack->dt))
 			return alpha;
 
-		// probing transposition table (~188 Elo)
+		// probing the transposition table (single threaded ~190 Elo)
+		// checking for a cutoff if probing succeeds (~95 Elo)
 
-		bool pv_node{ beta != alpha + 1 };
-		key64 key{ zobrist::adjust_key(pos.key, stack->singular_mv) };
+		key64 key{ zobrist::adjust_key(pos.key.pos, stack->singular_mv) };
 		trans::entry tt{};
-		if (tt.probe(key, stack->dt) && !pv_node && tt.dt >= dt && (tt.sc <= alpha || tt.sc >= beta))
-		{
-			// cutoff (~98 Elo)
 
-			if (tt.bd == bound::exact
-			|| (tt.bd == bound::lower && tt.sc >= beta)
-			|| (tt.bd == bound::upper && tt.sc <= alpha))
+		if (tt.probe(key, stack->dt) && !nd.pv && tt.dt >= dt)
+			if ((tt.sc <= alpha || tt.sc >= beta) && sc::tt_cutoff(tt.bd, tt.sc, alpha, beta))
 				return tt.sc;
+
+		// probing Syzygy endgame table-bases
+
+		if (auto sc{ thread.probe_syzygy(pos, dt, stack->dt) }; std::get<0>(sc) != score::NONE)
+		{
+			trans::store(key, move{}, sc, lim::dt - 1, stack->dt);
+			return std::get<0>(sc);
 		}
 
-		// probing Syzygy tablebases
+		// evaluating the current position, correcting the static eval with history tables (~20 Elo)
 
-		if (thread.use_syzygy)
-		{
-			if (int pop{ bit::popcnt(pos.side[both]) };
-				pop <= uci::syzygy.pieces
-				&& (dt >= uci::syzygy.dt || pop < std::min(5, uci::syzygy.pieces))
-				&& pos.half_cnt == 0)
+		node::p_variation new_pv{};
+		score sc{ nd.check ? score::NONE : eval::static_eval(pos, thread.hash)};
+		stack->sc = sc = thread.hist.correct_sc(pos, stack, sc);
+		(stack + 1)->killer = {};
+		(stack + 2)->fail_high_cnt = 0;
+
+		bool pruning  { !nd.pv && !nd.check && stack->pruning && !sc::mate(beta) };
+		bool improving{ (stack - 2)->sc != score::NONE && (stack - 2)->sc < sc };
+		bool critical { nd.pv || nd.check || improving };
+
+		// internal iterative reduction (~10 Elo)
+
+		if (nd.cut && dt >= IIR_DT && !tt.mv)
+			dt -= 1;
+
+		// static null move pruning (~35 Elo)
+
+		if (pruning && dt <= SNMP_DT && sc - SNMP_MARGIN1 * dt - SNMP_MARGIN2 * dt * dt >= beta)
+			return (sc + beta) / 2;
+
+		// razoring (~15 Elo)
+
+		if (pruning && dt <= RAZOR_DT)
+			if (score new_alpha{ alpha - RAZOR_MARGIN1 - RAZOR_MARGIN2 * dt }; sc <= new_alpha)
 			{
-				thread.chrono.hits = thread.chrono.hit_threshold;
-				int success{};
-				if (int wdl{ syzygy::probe_wdl(pos, success) }; success)
-				{
-					thread.cnt_tbhit += 1;
-					auto  tb{ sc::tb::wdl(wdl, stack->dt) };
-					score sc{ std::get<0>(tb) };
-					bound bd{ std::get<1>(tb) };
-
-					trans::store(key, move{}, sc, bd, lim::dt - 1, stack->dt);
-					return sc;
-				}
+				score new_score{ qsearch(thread, stack, nd, 0, new_alpha, new_alpha + score(1)) };
+				if (new_score <= new_alpha)
+					return new_score;
 			}
-		}
 
-		// evaluating the current position & initializing pruning
+		// null move pruning (~85 Elo)
 
-		p_variation pv_next{};
-		score sc{ (pv_node || in_check) ? score::none : eval::static_eval(pos, thread.hash) };
-		stack->sc = sc;
-
-		bool pruning{ !pv_node && !in_check && stack->pruning && !sc::mate(beta) };
-		bool critical{ pv_node ||  in_check || stack->dt <= 2 || (stack - 2)->sc == score::none || (stack - 2)->sc < sc };
-
-		// static null move pruning (~58 Elo)
-
-		if (pruning && dt <= 3 && sc - 50 * dt >= beta)
-			return beta;
-
-		// razoring (~2 Elo)
-
-		if (pruning && dt <= 2 && sc + 200 + 100 * dt <= alpha)
+		if (pruning && dt >= NMP_DT && !stack->singular_mv && !pos.lone_pawns() && sc >= beta)
 		{
-			score raz_alpha{ score(alpha - 200 - 100 * dt) };
-			score new_score{ qsearch(thread, pos, pv, in_check, stack->dt, 0, raz_alpha, raz_alpha + score(1)) };
-			if (new_score <= raz_alpha)
-				return new_score;
-		}
-
-		// null move pruning (~53 Elo)
-
-		if (pruning && dt >= 2 && !stack->singular_mv && !pos.lone_pawns() && sc >= beta)
-		{
-			depth red{ 2 + dt / 5 + std::min(3, depth(sc - beta) / 150) };
-			null::make_move(pos, stack);
-			stack->mv = move{};
-			score null_sc{ -alphabeta(thread, pos, stack + 1, pv_next, false, !cut_node, dt - 1 - red, -beta, score(1) - beta) };
+			depth red{ NMP_RED1 + dt / NMP_RED2 + std::min(3, depth(sc - beta) / NMP_RED3) };
+			null::make_move(pos, stack, thread);
+			node  new_nd{ &pos, &new_pv, false, !nd.cut, false };
+			score null_sc{ -alphabeta(thread, stack + 1, new_nd, dt - red, -beta, score(1) - beta) };
 			null::revert_move(pos, stack);
 
 			if (null_sc >= beta)
 				return beta;
 		}
 
-		// internal iterative deepening (~3 Elo)
+		// internal iterative deepening (~5 Elo)
 
-		if (stack->pruning && pv_node && !tt.mv && dt >= 3)
+		if (stack->pruning && nd.pv && !tt.mv && dt >= IID_DT)
 		{
 			stack->pruning = false;
-			alphabeta(thread, pos, stack, pv_next, in_check, cut_node, dt - 2, alpha, beta);
+			node new_nd{ &pos, &new_pv, nd.check, nd.cut, false };
+			alphabeta(thread, stack, new_nd, dt - IID_RED, alpha, beta);
 			stack->pruning = true;
 			tt.probe(key, stack->dt);
 		}
 
 		// initializing move loop
-		// to index history tables, the two previous moves are retrieved
 
-		move best_mv{};
-		move mv_prev1{ (stack - 1)->mv };
-		move mv_prev2{ stack->dt >= 2 ? (stack - 2)->mv : move{} };
-		move& counter{ thread.counter[pos.cl][mv_prev1.pc()][mv_prev1.sq2()] };
-
-		score best_sc{ -score::mate };
-		score futility_sc{ score(sc + 50 + 100 * dt) };
+		move& counter{ thread.counter[pos.cl][(stack - 1)->mv.pc()][(stack - 1)->mv.sq2()] };
+		move  best_mv{};
+		score best_sc{ -MATE };
 		score old_alpha{ alpha };
-
-		int defer_cnt{};
-		int quiet_cnt{};
-		int second_pass_cnt{};
+		int quiet_cnt{}, capture_cnt{};
 
 		// generating and sorting moves while looping through them
 
-		movepick<mode::pseudolegal> pick(pos, tt.mv, mv_prev1, mv_prev2, counter, stack->killer, thread.hist, stack->defer_mv, defer_cnt);
+		movepick<mode::PSEUDOLEGAL> pick(pos, tt.mv, stack, counter, thread.hist);
 		for (move mv{ pick.next() }; mv; mv = pick.next())
 		{
 			verify(pick.hits >= 1 && pick.hits <= int(lim::moves));
-			verify(pick.hits == 1 || mv != tt.mv || uci::thread_cnt > 1);
-			verify_deep(pos.pseudolegal(mv));
+			verify(pick.hits == 1 || mv != tt.mv);
 
-			// cutoff check (ABDADA)
-
-			if (uci::use_abdada && defer_cnt > 0 && !pv_node && dt >= abdada::dt_cutoff)
-			{
-				verify(uci::thread_cnt > 1);
-				if (tt.probe(key, stack->dt) && (tt.bd == bound::lower && tt.sc >= beta))
-					return tt.sc;
-			}
-
-			// skipping moves that are being proved to be singular
+			// skipping moves that are being verified to be singular
 
 			if (mv == stack->singular_mv)
 			{
@@ -559,89 +382,75 @@ namespace search
 
 			// initializing for the new move
 
-			int mv_cnt{ pick.stage_deferred() ? stack->mv_cnt[second_pass_cnt++] : pick.hits };
 			bool gives_check{ pos.gives_check(mv) };
 			bool quiet{ mv.quiet() };
-			history::sc hist;
-			verify(second_pass_cnt <= defer_cnt);
-
+			history::sc hist{};
 			if (quiet)
-			{
-				// retrieving the history scores for quiet moves
+				hist.get(thread.hist, mv, stack);
+			pruning = !nd.pv && best_sc > -LONGEST_MATE;
 
-				stack->quiet_mv[quiet_cnt++] = mv;
-				hist.get(thread.hist, mv, mv_prev1, mv_prev2);
+			// pruning quiet moves at shallow depth (~95 Elo)
+
+			if (pruning && quiet && !gives_check && !nd.check)
+			{
+				// late move pruning (~50 Elo)
+
+				if (dt <= LMP_DT && pick.hits >= late_move_cnt[critical][dt])
+					continue;
+
+				// futility pruning (~15 Elo)
+
+				if (dt <= FUT_DT && stack->sc + FUT_MARGIN1 + FUT_MARGIN2 * dt <= alpha)
+					continue;
+
+				// continuation-history pruning (~2 Elo)
+
+				if (dt <= CONT_HIST_DT && (hist.cont1 < CONT_HIST_MARGIN1 || hist.cont2 < CONT_HIST_MARGIN2))
+					continue;
+
+				// SEE pruning quiets (~5 Elo)
+
+				if (dt <= SEE_QUIET_DT && !attack::see_above(pos, mv, score(SEE_QUIET_MARGIN * dt)))
+					continue;
 			}
 
-			// pruning quiet moves at shallow depth (~99 Elo)
+			// main history pruning (~0 Elo)
 
-			if (!pv_node && quiet && best_sc > -score::longest_mate && !gives_check && !in_check)
-			{
-				// late move pruning (~58 Elo)
-
-				if (dt <= 6 && mv_cnt >= late_move::cnt[critical][dt])
-					continue;
-
-				// futility pruning (~4 Elo)
-
-				if (dt <= 6 && futility_sc <= alpha)
-					continue;
-
-				// history pruning (~0 Elo)
-
-				if (dt <= 2 && (hist.counter < -500 || hist.continuation < -3000))
-					continue;
-
-				// SEE pruning quiets (~15 Elo)
-
-				if (dt <= 10 && !attack::see_above(pos, mv, score(0)))
-					continue;
-			}
+			if (best_sc > -LONGEST_MATE && quiet && dt <= HIST_DT && hist.main < HIST_MARGIN)
+				continue;
 
 			// SEE pruning bad tactical moves (~10 Elo)
 
-			if (!pv_node && !quiet && best_sc > -score::longest_mate && dt <= 3 && !attack::see_above(pos, mv, score(-100 * dt)))
+			if (pruning && !quiet && dt <= SEE_TAC_DT && !attack::see_above(pos, mv, score(SEE_TAC_MARGIN * dt)))
 				continue;
 
-			// deferring moves that are searched by other threads (ABDADA)
+			// singular extension (~2 Elo)
 
-			key32 mv_hash{ zobrist::mv_key(mv, pos.key) };
-			if (uci::use_abdada && pick.hits > 1 && pick.can_defer() && dt >= abdada::dt_defer && abdada::defer(mv_hash))
-			{
-				stack->mv_cnt[defer_cnt] = pick.hits;
-				stack->defer_mv[defer_cnt++] = mv;
-				continue;
-			}
-
-			// singular extension (~18 Elo)
-
-			bool singular{};
-			if (mv == tt.mv && dt >= 6 && tt.bd == bound::lower && tt.dt >= dt && !defer_cnt)
+			depth ext{};
+			if (mv == tt.mv && dt >= SE_DT && tt.bd == bound::LOWER && tt.dt >= dt)
 			{
 				verify(pick.hits == 1);
-				verify(tt.sc != score::none);
+				verify(tt.sc != score::NONE);
 
-				score alpha_bd{ std::max(tt.sc - score(2 * dt), -score::mate) };
+				score alpha_bd{ std::max(tt.sc - score(dt), -MATE) };
 				stack->singular_mv = mv;
-				sc = -alphabeta(thread, pos, stack, pv_next, in_check, cut_node, dt - 4, alpha_bd, alpha_bd + score(1));
+				node new_nd{ &pos, &new_pv, nd.check, nd.cut, false };
+				sc = -alphabeta(thread, stack, new_nd, dt - SE_RED, alpha_bd, alpha_bd + score(1));
 
 				verify(stack->singular_mv == mv);
 				stack->singular_mv = move{};
-				if (quiet)
-				{
-					verify(quiet_cnt == 1);
-					stack->quiet_mv[0] = mv;
-				}
-				singular = (sc <= alpha_bd);
+				if (sc <= alpha_bd)
+					ext = 1;
+				else if (tt.sc <= alpha)
+					ext = -1;
 			}
 
-			// other extensions: check (~39 Elo), pawn-push & recapture (~29 Elo)
+			// other extensions: check (~40 Elo) & history (~10 Elo)
 
-			depth ext{ singular
-				|| gives_check
-				|| (pv_node && (pick.list.pos.recapture(mv) || mv.push_to_7th())) };
+			if (gives_check || (mv == tt.mv && dt >= HIST_EXT_DT && hist.all() >= HIST_EXT_MARGIN && std::abs(tt.sc) <= 500))
+				ext = 1;
 
-			// speculative prefetch of the next TT-entry (~1 Elo)
+			// speculative prefetch of the next TT-entry (~15 Elo)
 
 			key64 next_key{ zobrist::pos_key(pos, mv) };
 			memory::prefetch((char*)trans::get_entry(next_key));
@@ -655,52 +464,64 @@ namespace search
 				continue;
 			}
 			stack->mv = mv;
-			verify_deep(gives_check == pos.check());
+			stack->cont_mv = &thread.hist.corr_cont[mv.pc()][mv.sq2()];
+			if (quiet)
+				stack->quiet_mv[quiet_cnt++] = mv;
+			else if (mv.capture())
+				stack->capture_mv[capture_cnt++] = mv;
+			node new_nd{ &pos, &new_pv, gives_check, true, false };
+			verify(gives_check == pos.check());
 
-			// late move reduction (~64 Elo)
+			// late move reduction (~180 Elo)
 
-			depth red{};
-			if (mv_cnt >= 4 && dt >= 3)
+			bool reducing{};
+			depth new_dt{ dt - 1 + ext };
+			depth red_dt{};
+
+			if ((reducing = pick.hits >= LMR_CNT && dt >= LMR_DT))
 			{
 				if (quiet)
 				{
-					red  = late_move::red[dt][mv_cnt];
-					red += cut_node;
-					red += !pv_node;
-					red += !critical;
-					red += (hist.main + hist.counter + hist.continuation) / -7500;
-					red -= !cut_node && attack::escape(pick.list.pos, mv);
-					red  = std::min(std::max(red, 0), 6);
+					red_dt  = late_move_red[dt][pick.hits];
+					red_dt += nd.cut;
+					red_dt += !nd.pv;
+					red_dt += hist.all() / HIST_RED;
+					red_dt += alpha - stack->sc > ALPHA_MARGIN;
+					red_dt -= !nd.cut && attack::escape(pick.list.pos, mv);
+					red_dt -= (stack + 1)->fail_high_cnt <= FAIL_HIGH_CNT;
 				}
-				else if (cut_node
-					  || stack->sc + attack::value[mv.vc()] <= alpha
-					  || mv_cnt >= late_move::cnt[critical][std::min(dt, 6)])
-					red = 1;
+				else
+				{
+					red_dt = nd.cut
+						|| alpha - stack->sc >= attack::value[mv.vc()]
+						|| pick.hits >= late_move_cnt[critical][std::min(dt, 6)];
+				}
+
+				red_dt += !critical;
+				red_dt  = std::max(new_dt - std::clamp(red_dt, -1, int(LMR_MAX)), 1);
+
+				// searching with reduced depth on a null window for late moves & adjusting depth afterwards (~10 Elo)
+
+				sc = -alphabeta(thread, stack + 1, new_nd, red_dt, -alpha - score(1), -alpha);
+				new_dt += (sc > best_sc + DEEPER_MARGIN + dt * 2);
+				new_dt -= (sc < best_sc + SHALLOWER_MARGIN + dt);
 			}
 
-			// late move reduction search
+			// LMR-research & principal variation search (~205 Elo)
 
-			depth new_dt{ dt - 1 + ext };
-			score new_alpha{ pv_node && pick.hits > 1 ? -alpha - score(1) : -beta };
-			bool  new_cut_node{ pv_node && pick.hits == 1 ? false : !cut_node };
-
-			if (red)
-				sc = -alphabeta(thread, pos, stack + 1, pv_next, gives_check, true, new_dt - red, -alpha - score(1), -alpha);
-
-			// principal variation search with ABDADA and LMR-research (~427 Elo)
-
-			if (!red || (red && sc > alpha))
+			if (!(reducing && sc <= alpha))
 			{
-				if (uci::use_abdada && pick.hits > 1 && pick.can_defer() && dt > abdada::dt_defer)
-				{
-					abdada::add(mv_hash);
-					sc = -alphabeta(thread, pos, stack + 1, pv_next, gives_check, new_cut_node, new_dt, new_alpha, -alpha);
-					abdada::remove(mv_hash);
-				}
-				else sc = -alphabeta(thread, pos, stack + 1, pv_next, gives_check, new_cut_node, new_dt, new_alpha, -alpha);
+				new_nd.cut =   { nd.pv && pick.hits == 1 ? false : !nd.cut };
+				score new_alpha{ nd.pv && pick.hits  > 1 ? -alpha - score(1) : -beta };
 
-				if (pick.hits > 1 && pv_node && sc > alpha)
-					sc = -alphabeta(thread, pos, stack + 1, pv_next, gives_check, false, new_dt, -beta, -alpha);
+				if (!reducing || new_dt > red_dt)
+					sc = -alphabeta(thread, stack + 1, new_nd, new_dt, new_alpha, -alpha);
+
+				if (pick.hits > 1 && nd.pv && sc > alpha)
+				{
+					new_nd.cut = false;
+					sc = -alphabeta(thread, stack + 1, new_nd, new_dt, -beta, -alpha);
+				}
 			}
 
 			pos = pick.list.pos;
@@ -713,23 +534,25 @@ namespace search
 				best_sc = sc;
 				if (sc > alpha)
 				{
-					// checking for a beta cutoff
+					// update history tables
 
 					best_mv = mv;
+					thread.hist.update(mv, stack, quiet_cnt, capture_cnt, dt);
+
+					// checking for a beta cutoff
+					
 					if (sc >= beta)
 					{
 						if (quiet)
 						{
-							// updating history tables, killer- & counter-moves (~412 Elo)
-
-							thread.hist.update(mv, mv_prev1, mv_prev2, stack->quiet_mv, quiet_cnt, dt);
-							update::killer_mv(stack->killer, mv);
+							stack->killer.update(mv);
 							counter = mv;
 						}
+						stack->fail_high_cnt += 1;
 						break;
 					}
 					alpha = sc;
-					update::prov_pv(mv, pv, pv_next);
+					p_variation::update_leaf(mv, nd.p_var, &new_pv);
 				}
 			}
 		}
@@ -738,216 +561,209 @@ namespace search
 
 		if (pick.hits == 0)
 		{
-			verify(alpha == old_alpha);
-			return !stack->singular_mv ? (in_check ? score(stack->dt) - score::mate : score::draw) : alpha;
+            verify(alpha == old_alpha);
+            return !stack->singular_mv ? (nd.check ? score(stack->dt) - MATE : DRAW) : alpha;
 		}
 
 		// storing the results in the transposition table
 
 		if (!stack->singular_mv)
-		{
-			bound bd{ best_sc <= old_alpha ? bound::upper : (best_sc >= beta ? bound::lower : bound::exact) };
-			trans::store(key, best_mv, best_sc, bd, dt, stack->dt);
-		}
+			trans::store(key, best_mv, sc::make_bounded(best_sc, old_alpha, beta), dt, stack->dt);
+
+		// updating correction history tables
+
+		if (!nd.check && !(best_mv && best_mv.capture())
+			&& ((best_sc < stack->sc && best_sc < beta) || (best_sc > stack->sc && best_mv)))
+			thread.hist.update_corr(pos, stack, best_sc, stack->sc, dt);
 
 		verify(type::sc(best_sc));
 		return best_sc;
 	}
 
-	score alphabeta_root(sthread& thread, board& pos, rootpick& pick, depth dt, score alpha, score beta, int multipv)
+	static score alphabeta_root(sthread& thread, board& pos, rootpick& pick, depth dt, score alpha, score beta, int multipv)
 	{
 		// starting the alpha-beta search with the root nodes
 
 		verify(1 <= dt && dt <= lim::dt);
-		verify(-score::mate <= alpha && alpha < beta&& beta <= score::mate);
+		verify(-MATE <= alpha && alpha < beta && beta <= MATE);
 
 		// initializing the search
 
-		auto stack{ &(thread.stack[0]) };
-		p_variation pv{};
-		score sc{ score::none };
-		bool wrong_pv{};
-		int  mv_n{};
+		auto stack{ thread.stack_front() };
+		(stack + 1)->killer = {};
+		(stack + 2)->fail_high_cnt = 0;
+		node::p_variation pv{};
+		score sc{ score::NONE };
+		int mv_n{};
 
 		// looping through the move-list
 
-		for (auto node{ pick.first() }; node; node = pick.next())
+		for (auto root{ pick.first() }; root; root = pick.next())
 		{
-			verify_deep(pos.pseudolegal(node->mv));
-			if (node->skip)
+			if (root->skip)
 				continue;
 			mv_n += 1;
 
-			uci::info_currmove(thread, multipv, node->mv, mv_n);
-			node->nodes -= thread.cnt_n;
+			uci::info_currmove(thread, multipv, root->mv, mv_n);
+			root->nodes -= thread.cnt_n;
 
-			pos.new_move(node->mv);
-			stack->mv = node->mv;
-			verify_deep(pos.legal());
+			pos.new_move(root->mv);
+			verify(pos.legal());
+			node new_nd{ &pos, &pv, root->check, mv_n > 1, false };
+			stack->mv = root->mv;
+			stack->cont_mv = &thread.hist.corr_cont[root->mv.pc()][root->mv.sq2()];
 
-			// check extension (~7 Elo)
+			// check extension (~0 Elo)
 
-			depth ext{ node->check };
-			depth new_dt{ dt - 1 + ext };
+			depth ext{ root->check };
 			score new_alpha{ mv_n > 1 ? -alpha - score(1) : -beta };
+			
+			// PVS (~95 Elo)
 
-			// PVS (~117 Elo)
-
-			sc = -alphabeta(thread, pos, stack + 1, pv, node->check, mv_n > 1, new_dt, new_alpha, -alpha);
+			sc = -alphabeta(thread, stack + 1, new_nd, dt - 1 + ext, new_alpha, -alpha);
 			if (mv_n > 1 && sc > alpha)
-				sc = -alphabeta(thread, pos, stack + 1, pv, node->check, false, new_dt, -beta, -alpha);
+			{
+				new_nd.cut = false;
+				sc = -alphabeta(thread, stack + 1, new_nd, dt - 1 + ext, -beta, -alpha);
+			}
 
-			node->nodes += thread.cnt_n;
+			root->nodes += thread.cnt_n;
 			pick.revert(pos);
 
-			verify(node->nodes >= 0);
+			// refining the search scores with the more accurate table-base scores
+
+			bool refinable{ pick.tb_pos && sc::tb::refinable(root->weight, sc) };
+			if  (refinable)
+				sc = (score)root->weight;
+
+			verify(root->nodes >= 0);
 			verify(type::sc(sc));
-
-			if (pick.tb_pos)
-			{
-				// refining the search score with the more accurate table-base score
-				// also noting if the PV doesn't match with this score
-
-				score dtz_sc{ (score)node->weight };
-				wrong_pv = (sc::tb::mate(dtz_sc) && !sc::mate(sc)) || (sc::tb::draw(dtz_sc) && !sc::draw(sc));
-				if (wrong_pv)
-					sc = dtz_sc;
-			}
 
 			if (sc > alpha)
 			{
 				if (sc >= beta)
 					return sc;
 
-				alpha = sc;
-				update::main_pv(node->mv, thread.pv[multipv], pv);
-				node->nodes += thread.cnt_n;
+				// new best move was found, so updating the PV
+				// adding a bonus to favor the move in the next rearrangement of the move order (~0 Elo)
 
+				alpha = sc;
+				p_variation::update_root(root->mv, thread.pv[multipv], &pv, pos.key.pos);
 				if (pick.tb_pos)
-					thread.pv[multipv].wrong = wrong_pv;
+					thread.pv[multipv].tb_root = refinable;
+
+				root->nodes += thread.cnt_n;
 			}
 		}
 		return alpha;
 	}
 
-	score aspiration_window(sthread& thread, board& pos, rootpick& pick, depth base_dt, int multipv)
+	static score aspiration_window(sthread& thread, board& pos, rootpick& pick, depth base_dt, int multipv)
 	{
-		// entering the alpha-beta-search through an aspiration window (~20 Elo)
+		// entering the alpha-beta-search through an aspiration window (~25 Elo)
 		// the window widens dynamically depending on the bound the search returns
 
 		auto& pv{ thread.pv[multipv] };
-		bound bd{ bound::exact };
+		bound bd{ bound::EXACT };
 		depth dt{ base_dt };
-		score alpha{ -score::mate }, beta{ score::mate };
-		score sc{ score::none }, sc_old{ pv.sc };
-		score margin{ score(35) };
 
-		verify(dt == 1 || pv.sc != score::none);
+		score alpha { -MATE }, beta { MATE };
+		score sc    { score::NONE }, sc_old{ pv.sc };
+		score window{ score(int(search::ASP_WINDOW)) }, margin{ window };
+
+		verify(dt == 1 || pv.sc != score::NONE);
 
 		// table-base positions always get an infinite window to encourage finding the correct move by the search itself
 		// proven mates also get an infinite window
 
 		if (dt >= 4 && !pick.tb_pos && !sc::tb::mate(sc_old) && !sc::mate(sc_old))
 		{
-			alpha = std::max(sc_old - margin, -score::mate);
-			beta  = std::min(sc_old + margin,  score::mate);
+			alpha = std::max(sc_old - margin, -MATE);
+			beta  = std::min(sc_old + margin,  MATE);
 		}
 
 		while (true)
 		{
-			verify(-score::mate <= alpha && alpha < beta && beta <= score::mate);
+			verify(-MATE <= alpha && alpha < beta && beta <= MATE);
 			sc = alphabeta_root(thread, pos, pick, std::max(1, dt), alpha, beta, multipv);
 
 			verify(type::sc(sc));
-			margin = margin * 4;
+			margin = margin * search::ASP_MULT;
 
 			if (sc <= alpha)
 			{
-				bd    = bound::upper;
+				bd    = bound::UPPER;
 				beta  = (beta + alpha) / 2;
-				alpha = std::max(sc - margin, -score::mate);
+				alpha = std::max(sc - margin, -MATE);
 				dt    = base_dt;
 			}
 			else if (sc >= beta)
 			{
-				bd   = bound::lower;
-				beta = std::min(sc + margin, score::mate);
+				bd   = bound::LOWER;
+				beta = std::min(sc + margin, MATE);
 				dt  -= 1;
 			}
 			else
 				break;
 
-			if (margin > 140)
+			if (margin > window * search::ASP_MULT_MAX)
 			{
-				alpha = -score::mate;
-				 beta =  score::mate;
+				alpha = -MATE;
+				 beta =  MATE;
 			}
 			uci::info_bound(thread, multipv, sc, bd);
 		}
 		return sc;
 	}
 
-	void iterative_deepening(sthread& thread)
+	static void iterative_deepening(sthread& thread)
 	{
 		// iterative deepening framework, the base of the search hierarchy
 		// starting by generating all root node moves
 
 		board pos{ thread.pos };
 		rootpick pick(pos);
+		thread.cnt_root_mv = pick.mv_cnt();
 
-		// probing syzygy tablebases
+		// probing Syzygy table-bases
 		
-		if (thread.use_syzygy = syzygy::tb_cnt > 0; thread.use_syzygy && bit::popcnt(pos.side[both]) <= uci::syzygy.pieces)
-		{
-			if (pick.tb_pos = syzygy::probe_dtz_root(pos, pick, uci::game_hash); pick.tb_pos)
-				thread.use_syzygy = false;
-			else
-			{
-				// using WDL-tables as a fall-back if DTZ-tables are missing
-				// allowing probing during the search only if the position is winning
-
-				if (pick.tb_pos = syzygy::probe_wdl_root(pos, pick); pick.tb_pos && !pick.tb_win())
-					thread.use_syzygy = false;
-			}
-		}
+		thread.use_syzygy = syzygy::probe_root(pos, pick);
 		thread.cnt_tbhit += pick.tb_pos;
 
-		// iterative deepening & looping through multi-principal variations
+		// starting iterative deepening & looping through all principal variations indicated by UCI command 'MultiPV'
 
-		score sc{ score::none };
+		score sc{ score::NONE };
 		for (depth dt{ 1 }; dt <= uci::limit.dt && !uci::stop; ++dt)
 		{
 			for (int i{}; i < (int)uci::multipv && i < pick.mv_cnt() && !uci::stop; ++i)
 			{
-				// rearranging the root move order before starting the alpha-beta search through an aspiration window
+				// rearranging the root move order (~165 Elo) before starting the alpha-beta search through an aspiration window
 
 				move_var& pv{ thread.pv[i] };
-				pick.rearrange_list(pv.mv[0], i > 0 ? thread.pv[i - 1].mv[0] : move{});
 				pv.dt = dt;
+				pick.rearrange_list(pv.mv[0], i > 0 ? thread.pv[i - 1].mv[0] : move{});
 
 				try { sc = aspiration_window(thread, pos, pick, dt, i); }
-				catch (exception& ex)
+				catch ([[maybe_unused]] exception& ex)
 				{
-					if (ex == exception::stop_search) pick.revert(pos);
-					else verify(false);
+					verify(ex == exception::STOP_SEARCH);
+					pick.revert(pos);
 				}
 
-				// extending the targeted search time if the score is dropping (~7 Elo)
+				// extending the targeted search time if the score is dropping (~5 Elo)
 
-				if (dt >= 4 && sc - pv.sc <= -25)
-					thread.chrono.extend(sc - pv.sc);
+				if (thread.main() && dt >= EXT_TIME_DT && sc - pv.sc <= EXT_TIME_MARGIN)
+					thread.extend_time(sc - pv.sc);
 
-				// completing the PV
-
-				pv.dt -= uci::stop;
-				if (sc != -score::mate)
+				if (sc != -MATE)
 					pv.sc = sc;
 			}
 
 			// providing search information at every iteration & checking the search expiration conditions
 
-			uci::info_iteration(thread, pick.mv_cnt());
-			if (expiration::abort(thread.chrono, thread.pv[0].mv, pick, dt, thread.pv[0].sc))
+			if (thread.main())
+				uci::info_iteration(thread);
+			if (abort(thread.chrono, thread.pv[0].mv, pick, dt, thread.pv[0].sc))
 				break;
 		}
 	}
@@ -955,67 +771,54 @@ namespace search
 
 void sthread::start_search()
 {
-	// entering the search through the search-thread
+	// each thread is starting the search
 
-	verify(uci::mv_offset < rep_hash.size());
-	verify(uci::mv_offset < uci::game_hash.size());
 	thread_pool::searching += 1;
-
-	// initializing search parameters
-
-	cnt_n = cnt_tbhit = 0;
-	for (int i{}; i <= uci::mv_offset; ++i)
-		rep_hash[i] = uci::game_hash[i];
-	for (depth dt{}; dt < (depth)stack.size(); ++dt)
-	{
-		stack[dt] = sstack{};
-		stack[dt].dt = dt;
-	}
-	for (auto& cl : counter)
-		for (auto& pc : cl)
-			for (auto& sq : pc)
-				sq = move{};
-
-	// initializing PV related things
-
-	pv.clear();
-	pv.resize(uci::multipv);
-
-	// starting the iterative deepening search
-
+	init();
 	search::iterative_deepening(*this);
+
+	// search has finished
+	// forcing early search termination for all other threads if some are already idle
+
+	thread_pool::searching -= 1;
+	if (!uci::stop && thread_pool::searching < (int)pool->size() * 3 / 4)
+		uci::stop = true;
 
 	// waiting until all threads have finished their search
 
-	thread_pool::searching -= 1;
 	std::unique_lock<std::mutex> lock(thread_pool::mutex);
 	if (main())
-		while (thread_pool::searching) thread_pool::cv.wait(lock);
+		while (thread_pool::searching)
+			thread_pool::cv.wait(lock);
 	else
 		thread_pool::cv.notify_all();
 }
 
-void search::start(thread_pool& threads, timemanage::move_time movetime)
+void search::start(thread_pool& threads, timemanage::move_time mv_time)
 {
 	// starting point of the search hierarchy
+	// all search threads are activated and the search begins
 
 	verify(uci::limit.dt >= 1);
 	verify(uci::limit.dt <= lim::dt);
 
-	threads.start_clock(movetime);
-
-	// first resetting the tables for concurrent move-searching (ABDADA)
-	// then all search threads are activated and the search begins
-
-	for (auto& slot : abdada::concurrent) for (auto& hash : slot) hash = 0U;
-
+	threads.start_clock(mv_time);
 	for (uint32 i{ 0 + 1 }; i < threads.thread.size(); ++i)
 		threads.thread[i]->awake();
 	threads.thread[0]->start_search();
 
-	// concluding the search and displaying the best move
+	// concluding the search
 
 	bench += threads.thread[0]->get_nodes();
-	uci::info_bestmove(threads.get_bestmove());
+
+	// taking care of an early search termination after the UCI 'go ponder' or 'go infinite' command
+	// returning a best-move only after the 'ponderhit' or 'stop' command
+
+	std::unique_lock<std::mutex> lock(uci::mutex);
+	while (uci::infinite && !uci::stop)
+		uci::cv.wait(lock);
+
 	uci::stop = true;
+	uci::infinite = false;
+	uci::info_bestmove(threads.get_bestmove());
 }

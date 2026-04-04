@@ -18,17 +18,27 @@
 
 #pragma once
 
-#include <string>
-#include <chrono>
+#include <tuple>
 
-#include "board.h"
 #include "types.h"
 
-// enabling benchmarking the engine to test for correctness and speed
+// a collection of useful functions to keep track of the search score
 
-namespace bench
+namespace sc
 {
-	template<mode md>
-	void perft(board pos, depth dt_max);
-	void search(const std::string &filename, const milliseconds &time);
+	bool mate(score sc);
+	bool draw(score sc);
+	bool good_enough_mate(score sc);
+	bool mate_distance_pruning(score& alpha, score& beta, depth stack_dt);
+	bool tt_cutoff(bound bd, score sc, score alpha, score beta);
+	std::tuple<score, bound> make_bounded(score best_sc, score old_alpha, score beta);
+
+	// search scores for endgame table-bases have different ranges
+
+	namespace tb
+	{
+		bool mate(score sc);
+		bool draw(score sc);
+		bool refinable(int64& root_weight, score sc);
+	}
 }

@@ -16,38 +16,19 @@
 */
 
 
-#include <ostream>
+#pragma once
 
-#include "search.h"
-#include "trans.h"
-#include "syzygy.h"
-#include "eval.h"
-#include "misc.h"
-#include "magic.h"
-#include "bit.h"
-#include "zobrist.h"
-#include "uci.h"
-#include "main.h"
+#include <vector>
+#include <string>
 
-int main([[maybe_unused]] int argc, char* argv[])
+// tuning evaluation parameters based on Peter Österlund's Texel Tuning method:
+// https://www.chessprogramming.org/Texel%27s_Tuning_Method
+
+namespace tune
 {
-	std::cout << "Monolith " << uci::version_number << std::endl ;
-
 #if !defined(NDEBUG)
-	std::cout << "DEBUG flag set" << std::endl;
+	void evaluation(std::vector<std::string>& tuning_files, int thread_cnt);
+#else
+	inline void evaluation([[maybe_unused]] std::vector<std::string>& tuning_files, [[maybe_unused]] int thread_cnt) {}
 #endif
-
-	// initializing everything before entering the UCI communication loop
-
-	bit::init_masks();
-	zobrist::init_keys();
-	trans::create(uci::hash_size);
-	magic::init_table();
-	filesystem::init_path(argv[0]);
-	eval::mirror_tables();
-	search::init_params();
-	syzygy::init_tb(uci::syzygy_path);
-
-	uci::loop();
-	return 0;
 }

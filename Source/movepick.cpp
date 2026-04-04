@@ -1,6 +1,5 @@
 /*
-  Monolith 2 Copyright (C) 2017-2020 Jonas Mayr
-  This file is part of Monolith.
+  Monolith Copyright (C) 2017-2026 Jonas Mayr
 
   Monolith is free software: you can redistribute it and/or modify
   it under the terms of the GNU General Public License as published by
@@ -17,21 +16,25 @@
 */
 
 
+#include "main.h"
+#include "types.h"
+#include "uci.h"
 #include "movepick.h"
+#include "move.h"
 
-template class movepick<mode::legal>;
-template class movepick<mode::pseudolegal>;
+template class movepick<mode::LEGAL>;
+template class movepick<mode::PSEUDOLEGAL>;
 
 void rootpick::rearrange_list(move pv_mv, move multipv_mv)
 {
-	// resorting the root node moves at every iteration & excluding already searched multi-PV moves,
-	// but not resorting anything if the position has been found in the tablebases,
+	// sorting the root node moves at every iteration & excluding already searched multi-PV moves,
+	// not sorting anything if the position has been found in the table-bases,
 	// because in that case the move order is already perfect
 
 	if (multipv_mv)
 		sort.exclude_move(multipv_mv);
 	else if (!tb_pos)
-		sort.dynamical(pv_mv);
+		sort.sort_dynamic(pv_mv);
 	else
 		sort.include_moves();
 }
@@ -45,48 +48,43 @@ template<mode md> void movepick<md>::gen_weight()
 
 	switch (st[cnt.cycles])
 	{
-	// main search stages
+		// main search stages
 
-	case genstage::hash:
-		cnt.mv = list.gen_hash(weight.quiets.hash);
+	case genstage::HASH:
+		cnt.mv = list.gen_hash(weight.node.hash);
 		weight.hash();
 		break;
 
-	case genstage::winning:
+	case genstage::WINNING:
 		cnt.mv  = list.gen_capture();
-		cnt.mv += list.gen_promo(stage::promo_all);
+		cnt.mv += list.gen_promo(stage::PROMO_ALL);
 		weight.tactical_see();
 		break;
 
-	case genstage::killer:
-		cnt.mv = list.gen_killer(*weight.quiets.killer, weight.quiets.counter);
+	case genstage::KILLER:
+		cnt.mv = list.gen_killer(*weight.node.killer, weight.node.counter);
 		weight.killer();
 		break;
 
-	case genstage::quiet:
+	case genstage::QUIET:
 		cnt.mv = list.gen_quiet();
 		weight.quiet();
 		break;
 
-	case genstage::loosing:
+	case genstage::LOOSING:
 		cnt.mv = list.restore_loosing();
 		weight.loosing();
 		break;
 
-	case genstage::deferred:
-		cnt.mv = list.restore_deferred(*deferred_mv, *deferred_cnt);
-		weight.deferred();
-		break;
+		// quiescence search stages
 
-	// quiescence search stages
-
-	case genstage::tactical:
+	case genstage::TACTICAL:
 		cnt.mv  = list.gen_capture();
-		cnt.mv += list.gen_promo(stage::promo_queen);
+		cnt.mv += list.gen_promo(stage::PROMO_QUEEN);
 		weight.tactical();
 		break;
 
-	case genstage::evasion:
+	case genstage::EVASION:
 		cnt.mv = list.gen_quiet();
 		weight.evasion();
 		break;
@@ -97,9 +95,8 @@ template<mode md> void movepick<md>::gen_weight()
 	cnt.attempts = cnt.mv;
 }
 
-template move movepick<mode::legal>::next();
-template move movepick<mode::pseudolegal>::next();
-
+template move movepick<mode::LEGAL>::next();
+template move movepick<mode::PSEUDOLEGAL>::next();
 template<mode md> move movepick<md>::next()
 {
 	// cycling through move-generation stages and picking the highest-scored moves
@@ -109,7 +106,6 @@ template<mode md> move movepick<md>::next()
 		cnt.cycles += 1;
 		if (cnt.cycles >= cnt.max_cycles)
 			return move{};
-
 		gen_weight();
 	}
 
@@ -134,7 +130,7 @@ template<mode md> move movepick<md>::next()
 		// are generated twice, and moves with negative SEE are being deferred to the 'loosing' stage
 		// after their generation, so all of these can be skipped safely
 
-		verify(cnt.attempts == list.cnt.duplicate + (st[cnt.cycles] == genstage::winning ? list.cnt.loosing : 0)
+		verify(cnt.attempts == list.cnt.duplicate + (st[cnt.cycles] == genstage::WINNING ? list.cnt.loosing : 0)
 			|| uci::multipv > 1);
 		cnt.attempts = 0;
 		return next();
@@ -142,10 +138,8 @@ template<mode md> move movepick<md>::next()
 
 	verify(cnt.attempts >= 1);
 	verify(cnt.mv == list.cnt.mv);
+
 	cnt.attempts -= 1;
-
-	// a move has been found successfully
-
 	hits += 1;
 	weight.sc[best_idx] = 0ULL;
 	return list.mv[best_idx];
