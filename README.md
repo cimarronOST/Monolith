@@ -8,22 +8,19 @@ Monolith is a classical chess engine that uses a highly optimized alpha-beta sea
 In addition to experimenting with further enhancements to continuously increase playing strength, Monolith thrives towards a clean codebase and generally being a fun project to work on. The code is annotated with Elo estimates to gauge the impact of each implemented feature on playing strength.
 Monolith is compliant with the Universal Chess Interface (UCI) protocol and can be run via any UCI-compatible interface.
 
-Monolith is a new original implementation of many established concepts in computer chess, resulting in its own unique playing style. Over the past two decades, the emergence of competitive open-source chess engines has profoundly accelerated the development of computer chess and has made it feasible for everybody to join the ranks of chess programmers.
-This community effort culminated in the fantastic chess engine [Stockfish](https://github.com/official-stockfish/Stockfish). Monolith seeks to follow in its footsteps, continuously striving to play better chess.
-
 
 ## Elo rating
-The approximate strength as tested by various rating lists:
+The approximate strength as tested by rating lists:
 
-| Release | Estimation | [CCRL Blitz](https://www.computerchess.org.uk/ccrl/404) | [CCRL 40/15](https://www.computerchess.org.uk/ccrl/4040) | [CCRL 40/2 FRC](https://www.computerchess.org.uk/ccrl/404FRC) | [CEGT 40/20](http://www.cegt.net/40_40%20Rating%20List/40_40%20BestVersion/rangliste.html) | [CEGT 40/4](http://www.cegt.net/40_4_Ratinglist/40_4_AllVersion/rangliste.html)
-| ------------ | ---- | ---- | ---- | ---- | ---- | ---- |
-| Monolith 3   | 3200 |      |      |      |      |      |
-| Monolith 2   | 3000 | 3060 | 3040 | 3120 | 2910 | 2890 |
-| Monolith 1   | 2800 | 2810 | 2800 |      | 2660 |      |
-| Monolith 0.4 | 2600 | 2600 | 2600 | 2560 |      | 2430 |
-| Monolith 0.3 | 2400 | 2410 | 2390 |      |      |      |
-| Monolith 0.2 | 2200 | 2240 |      |      |      |      |
-| Monolith 0.1 | 2000 |      |      |      |      |      |
+| Release | Estimation | [CCRL Blitz](https://www.computerchess.org.uk/ccrl/404) | [CCRL 40/15](https://www.computerchess.org.uk/ccrl/4040) | [CEGT 40/20](http://www.cegt.net/40_40%20Rating%20List/40_40%20BestVersion/rangliste.html)
+| ------------ | ---- | ---- | ---- | ---- |
+| Monolith 3   | 3200 | 3260 | 3250 | 3110 |
+| Monolith 2   | 3000 | 3060 | 3040 | 2910 |
+| Monolith 1   | 2800 | 2810 | 2800 | 2660 |
+| Monolith 0.4 | 2600 | 2600 | 2600 |      |
+| Monolith 0.3 | 2400 | 2410 | 2390 |      |
+| Monolith 0.2 | 2200 | 2240 |      |      |
+| Monolith 0.1 | 2000 |      |      |      |
 
 
 ## Main features
@@ -73,7 +70,8 @@ Further options: `make [ARCH=architecture] [COMP=compiler]`
 
 
 #### Additional unofficial commands
-- `bench`: Running a couple of benchmark searches of an internal set of various positions.
+- `bench`: Running benchmark searches of an internal set of various positions.
+- `speedtest`: Running `bench` multiple times, useful to test the speed of the engine.
 - `perft [depth]`: Running perft up to [depth] on the current position.
 - `eval`: Computing the static evaluation of the current position without the use of the search function.
 - `board`: Displaying a basic character-chessboard of the current position.
